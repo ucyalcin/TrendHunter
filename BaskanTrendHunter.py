@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V16", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V17", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -15,33 +15,32 @@ st.sidebar.header("STRATEJİ AYARLARI")
 
 tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Gün", "4 Saat", "1 Saat", "15 Dakika", "5 Dakika"))
 
-# Veri derinliği maksimumda
+# tf_map (Resampling mantığı Extended Hours ile uyumlu hale getirildi)
 tf_map = {
-    "1 Gün":    {"ccxt": "1d", "yf": "1d", "yf_per": "5y", "resample": False}, 
-    "4 Saat":   {"ccxt": "4h", "yf": "1h", "yf_per": "2y", "resample": True}, 
-    "1 Saat":   {"ccxt": "1h", "yf": "1h", "yf_per": "1y", "resample": False},
+    "1 Gün":    {"ccxt": "1d", "yf": "1d", "yf_per": "2y", "resample": False}, 
+    "4 Saat":   {"ccxt": "4h", "yf": "1h", "yf_per": "1y", "resample": True}, 
+    "1 Saat":   {"ccxt": "1h", "yf": "1h", "yf_per": "6mo", "resample": False},
     "15 Dakika":{"ccxt": "15m", "yf": "15m", "yf_per": "1mo", "resample": False},
     "5 Dakika": {"ccxt": "5m", "yf": "5m", "yf_per": "1mo", "resample": False}
 }
 selected_tf = tf_map[tf_label]
 
 st.sidebar.markdown("---")
-# DEMA FİLTRESİ
+
+# --- EXTENDED HOURS SEÇENEĞİ (YENİ) ---
+use_ext_hours = st.sidebar.checkbox("Genişletilmiş Saatleri (Pre/Post Market) Dahil Et", value=False, help="İşaretlersen TradingView'daki 'EXT' modu gibi gece verilerini de dahil eder. Mum sayıları artar.")
+
 use_dema_filter = st.sidebar.checkbox("Fiyat > DEMA Kuralını Kullan", value=True)
 dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, disabled=not use_dema_filter)
 
-# SuperTrend Ayarları
 st_atr_len = st.sidebar.number_input("SuperTrend ATR", value=12)
 st_factor = st.sidebar.number_input("SuperTrend Faktör", value=3.0)
-
-# TAZELİK 
 freshness = st.sidebar.number_input("Sinyal Tazeliği (Son kaç mum?)", min_value=1, value=20, step=1)
 
 st.sidebar.markdown("---")
 
-# --- RÖNTGEN MODU ---
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: NVDX)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: WMT)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
@@ -117,27 +116,25 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, use_dema, is_debug=Fal
         st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ")
         last_20 = df.tail(20).copy()
         last_20['Zaman'] = last_20.index
+        # Zamanı daha okunur yapalım (US saatine göre)
+        last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
         last_20['DEMA'] = last_20['DEMA'].round(2)
         last_20['Trend'] = np.where(last_20['ST_Trend'] == 1, "🟢 BUY", "🔴 SELL")
-        st.dataframe(last_20[['Fiyat', 'DEMA', 'Trend']], use_container_width=True)
+        
+        st.dataframe(last_20[['Zaman_Str', 'Fiyat', 'DEMA', 'Trend']], use_container_width=True)
         
         curr = df.iloc[-1]
-        st.write(f"**Anlık Fiyat:** {curr['close']:.2f} | **DEMA:** {curr['DEMA']:.2f}")
-        if use_dema and curr['close'] <= curr['DEMA']: st.error("❌ Fiyat DEMA Altında")
-        elif curr['ST_Trend'] != 1: st.error("❌ SuperTrend SELL")
-        else: st.success("✅ İndikatörler OLUMLU. Tazelik kontrol ediliyor...")
+        st.write(f"**Anlık:** {curr['close']:.2f}")
 
     current = df.iloc[-1]
     
-    # 1. DEMA Kuralı
     if use_dema and current['close'] <= current['DEMA']: return None
-    # 2. SuperTrend Kuralı
     if current['ST_Trend'] != 1: return None
-    # 3. Tazelik Kuralı
+    
     lookback = int(fresh) + 1
     recent = df['ST_Trend'].tail(lookback).values
-    if -1 not in recent: return None # Sinyal Bayat
+    if -1 not in recent: return None 
         
     candles_ago = 0
     for t in reversed(recent):
@@ -163,42 +160,35 @@ def get_crypto():
     except: return []
 
 def get_us():
-    # BAŞKANIN GRANDMASTER LIST (Güncellendi)
     return [
-        # TEKNOLOJİ & DEVLER
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD", "AVGO", "NFLX",
         "INTC", "QCOM", "CSCO", "DELL", "APP", "TSM", "BIDU", "BABA", "PLTR", "CRWD",
         "RBRK", "LSCC", "BBAI", "ZM", "ZS", "ZETA", "CLS", "PENG", "SOXL",
-        
-        # KALDIRAÇLI & AGRESİF
         "NVDX", "AAPU", "GGLL", "AMZZ", "METU", "AMZP", "MSTR", "COIN", "MARA", "QQQT",
-        
-        # TEMETTÜ & REIT & BDC (Yüksek Getiri)
         "O", "AGNC", "ORC", "SPHD", "DX", "OXLC", "GLAD", "GAIN", "GOOD", "LAND", "SRET",
         "QYLD", "XYLD", "SDIV", "DIV", "RYLD", "JEPI", "JEPQ", "EFC", "SCM", "PSEC",
         "QQQY", "APLE", "MAIN", "WSR", "ARR", "SBR", "GROW", "HRZN", "LTC", "PNNT",
         "SLG", "ARCC", "HTGC", "SPG", "NLY", "ETV", "PDI", "ARE", "FRT", "SPYI", "WPC",
         "ECC", "OMAH", "QQQI", "ABR", "IIPR", "CIM", "VNM", "RIET", "DLR", "VICI", "OXSQ",
-        
-        # SAĞLIK & TÜKETİM & SANAYİ
         "JPM", "V", "JNJ", "WMT", "PG", "XOM", "KO", "DIS", "CVX", "PFE", "BA", "GE", "F",
         "UBER", "PEP", "COST", "LULU", "MRNA", "REGN", "VZ", "MO", "OMCL", "POWL", "DXPE",
         "TLN", "RH", "TOST", "NU", "MOS", "AES", "OXY", "ASRT", "WRD", "CRS", "LUV",
         "ALL", "AYI", "APTV", "BIIB", "FTI", "VERU", "AZO", "HD", "EL", "CEG", "UPS",
         "NVO", "MRK", "MOH",
-        
-        # ETF & EMTİA
         "AGQ", "UGL", "LIT", "QQQ", "TQQQ", "UAMY", "WEAT", "GOOP", "QLD", "YINN",
         "IGM", "SPY", "PFIX", "TLT", "TLTW", "BIL", "VOO", "VTI", "BND", "VYM", "SCHD"
     ]
 
 def convert_4h(df):
+    # Resampling yaparken Pre-Market verisi varsa onları da akıllıca dahil etmesi lazım
+    # Ancak 4H periyodunda Pre-Market genelde gürültüdür. Yine de kullanıcı isterse dahil edilir.
     return df.resample('4h', offset='30min').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).dropna()
 
-def fetch_and_analyze(symbol, typ, tf_conf, is_debug=False):
+def fetch_and_analyze(symbol, typ, tf_conf, use_ext, is_debug=False):
     try:
         df = pd.DataFrame()
         if typ == 'CRYPTO':
+            # Kriptoda Extended Hours diye bir şey yok (7/24)
             x = ccxt.binance()
             limit = 1500
             ohlcv = x.fetch_ohlcv(symbol, tf_conf['ccxt'], limit=limit)
@@ -206,7 +196,8 @@ def fetch_and_analyze(symbol, typ, tf_conf, is_debug=False):
             df['time'] = pd.to_datetime(df['time'], unit='ms')
             df.set_index('time', inplace=True)
         else:
-            df = yf.download(symbol, period=tf_conf['yf_per'], interval=tf_conf['yf'], progress=False)
+            # prepost=use_ext BURASI SİHİRLİ NOKTA
+            df = yf.download(symbol, period=tf_conf['yf_per'], interval=tf_conf['yf'], prepost=use_ext, progress=False)
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             df.rename(columns=lambda x: x.lower(), inplace=True)
             if tf_conf['resample']: df = convert_4h(df)
@@ -220,12 +211,12 @@ def fetch_and_analyze(symbol, typ, tf_conf, is_debug=False):
 # ==========================================
 # 5. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V16 (GRANDMASTER)")
+st.title("🚀 BAŞKAN TREND HUNTER V17 (EXTENDED)")
 
 if btn_debug and debug_symbol:
-    st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
+    st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor... (Extended Hours: {use_ext_hours})")
     typ = 'CRYPTO' if '/' in debug_symbol else 'US'
-    fetch_and_analyze(debug_symbol.strip().upper(), typ, selected_tf, is_debug=True)
+    fetch_and_analyze(debug_symbol.strip().upper(), typ, selected_tf, use_ext_hours, is_debug=True)
 
 if start_btn:
     results = []
@@ -242,7 +233,7 @@ if start_btn:
     for i, (sym, typ) in enumerate(tasks):
         bar.progress((i+1)/len(tasks))
         status.text(f"Analiz: {sym}")
-        res = fetch_and_analyze(sym, typ, selected_tf)
+        res = fetch_and_analyze(sym, typ, selected_tf, use_ext_hours)
         if res: results.append(res)
 
     bar.empty()
@@ -250,4 +241,4 @@ if start_btn:
         st.success(f"Bitti! {len(results)} Sinyal Bulundu.")
         st.dataframe(pd.DataFrame(results), use_container_width=True)
     else:
-        st.warning("Sonuç Yok. Tazelik ayarını artırmayı veya DEMA filtresini kapatmayı dene.")
+        st.warning("Sonuç Yok. Tazelik ayarını artırmayı veya 'Genişletilmiş Saatleri Dahil Et' seçeneğini değiştirmeyi dene.")
