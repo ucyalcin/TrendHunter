@@ -6,7 +6,7 @@ import numpy as np
 from datetime import datetime
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V19", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V21", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -34,10 +34,13 @@ st_atr_len = st.sidebar.number_input("SuperTrend ATR", value=12)
 st_factor = st.sidebar.number_input("SuperTrend Faktör", value=3.0)
 freshness = st.sidebar.number_input("Sinyal Tazeliği (Son kaç mum?)", min_value=1, value=20, step=1)
 
+# ADX AYARI
+adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
+
 st.sidebar.markdown("---")
 
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: LLY)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: NVDA)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
@@ -47,12 +50,40 @@ manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
 start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. HESAPLAMA MOTORU (RMA + ADJ FIX)
+# 2. HESAPLAMA MOTORU (ADX + RMA + DEMA)
 # ==========================================
 def calculate_dema(series, length):
     ema1 = series.ewm(span=length, adjust=False).mean()
     ema2 = ema1.ewm(span=length, adjust=False).mean()
     return 2 * ema1 - ema2
+
+def calculate_adx(df, length=14):
+    # TradingView Tarzı RMA ile ADX Hesabı
+    df['tr0'] = abs(df['high'] - df['low'])
+    df['tr1'] = abs(df['high'] - df['close'].shift(1))
+    df['tr2'] = abs(df['low'] - df['close'].shift(1))
+    df['tr'] = df[['tr0', 'tr1', 'tr2']].max(axis=1)
+
+    df['up'] = df['high'] - df['high'].shift(1)
+    df['down'] = df['low'].shift(1) - df['low']
+
+    df['plus_dm'] = np.where((df['up'] > df['down']) & (df['up'] > 0), df['up'], 0)
+    df['minus_dm'] = np.where((df['down'] > df['up']) & (df['down'] > 0), df['down'], 0)
+
+    # Smoothing (RMA)
+    df['tr_smooth'] = df['tr'].ewm(alpha=1/length, adjust=False).mean()
+    df['plus_dm_smooth'] = df['plus_dm'].ewm(alpha=1/length, adjust=False).mean()
+    df['minus_dm_smooth'] = df['minus_dm'].ewm(alpha=1/length, adjust=False).mean()
+
+    # DI Calculation
+    df['plus_di'] = 100 * (df['plus_dm_smooth'] / df['tr_smooth'])
+    df['minus_di'] = 100 * (df['minus_dm_smooth'] / df['tr_smooth'])
+
+    # DX and ADX
+    df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
+    df['adx'] = df['dx'].ewm(alpha=1/length, adjust=False).mean()
+
+    return df
 
 def calculate_supertrend(df, period=10, multiplier=3):
     hl2 = (df['high'] + df['low']) / 2
@@ -62,7 +93,6 @@ def calculate_supertrend(df, period=10, multiplier=3):
     tr3 = abs(df['low'] - df['close'].shift(1))
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     
-    # Wilder's Smoothing (RMA) - TradingView Standardı
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
 
     up = hl2 - (multiplier * atr)
@@ -101,27 +131,29 @@ def calculate_supertrend(df, period=10, multiplier=3):
     return df
 
 # ==========================================
-# 3. ANALİZ (SİNYAL ANI KONTROLÜ)
+# 3. ANALİZ
 # ==========================================
-def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, use_dema, is_debug=False):
+def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_debug=False):
     if len(df) < (dema_len + 50): 
         if is_debug: st.error(f"Yetersiz Veri: {len(df)}")
         return None
 
     df['DEMA'] = calculate_dema(df['close'], dema_len)
     df = calculate_supertrend(df, st_atr, st_fact)
+    df = calculate_adx(df, adx_len) 
+    
+    current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V21)")
         last_20 = df.tail(20).copy()
         last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
         last_20['DEMA'] = last_20['DEMA'].round(2)
         last_20['Trend'] = np.where(last_20['ST_Trend'] == 1, "🟢 BUY", "🔴 SELL")
-        st.dataframe(last_20[['Zaman_Str', 'Fiyat', 'DEMA', 'Trend']], use_container_width=True)
+        last_20['ADX'] = last_20['adx'].round(2)
+        st.dataframe(last_20[['Zaman_Str', 'Fiyat', 'DEMA', 'Trend', 'ADX']], use_container_width=True)
 
-    current = df.iloc[-1]
-    
     # 1. Şu an BUY mu?
     if current['ST_Trend'] != 1: return None
     
@@ -155,6 +187,8 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, use_dema, is_debug=Fal
         "Fiyat": round(current['close'], 2),
         "DEMA": round(current['DEMA'], 2),
         "Sinyal": f"🔥 {candles_ago} Mum Önce",
+        "ADX Sinyal": round(signal_candle['adx'], 2), # SİNYAL ANINDAKİ DEĞER
+        "ADX Güncel": round(current['adx'], 2),       # ŞU ANKİ DEĞER
         "Durum": "YENİ TREND"
     }
 
@@ -169,37 +203,24 @@ def get_crypto():
     except: return []
 
 def get_us():
-    # V19 UNIVERSE LIST (Genişletilmiş)
+    # V19 UNIVERSE LIST
     return [
-        # --- TEKNOLOJİ & YAZILIM (MEVCUT + YENİ) ---
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD", "AVGO", "NFLX",
         "INTC", "QCOM", "CSCO", "DELL", "APP", "TSM", "BIDU", "BABA", "PLTR", "CRWD",
         "RBRK", "LSCC", "BBAI", "ZM", "ZS", "ZETA", "CLS", "PENG", "SOXL",
         "ADBE", "CRM", "NOW", "ORCL", "IBM", "INTU", "UBER", "ABNB", "BKNG", "PANW",
         "FTNT", "SNOW", "SQ", "SHOP", "U", "ROKU", "DKNG", "HOOD", "PYPL", "MU", "TXN",
         "LRCX", "ADI", "KLAC", "ARM", "SMCI",
-        
-        # --- FİNANS & BANKACILIK (YENİ EKLENENLER AĞIRLIKLI) ---
         "JPM", "V", "MA", "BAC", "WFC", "C", "GS", "MS", "BLK", "AXP", "SCHW", "USB",
         "TRV", "AIG", "SPGI", "COIN", "MSTR",
-        
-        # --- SAVUNMA & SANAYİ & HAVACILIK (YENİ EKLENENLER) ---
         "BA", "GE", "F", "GM", "CAT", "DE", "HON", "UNP", "UPS", "FDX", "LMT", "RTX",
         "NOC", "GD", "EMR", "MMM", "ETN",
-        
-        # --- SAĞLIK & BİYOTEKNOLOJİ (YENİLER: LLY, ABBV vs) ---
         "JNJ", "PFE", "MRNA", "REGN", "LLY", "UNH", "ABBV", "AMGN", "BMY", "GILD", "ISRG",
         "SYK", "CVS", "TMO", "DHR", "VRTX", "MOH",
-        
-        # --- TÜKETİM & PERAKENDE (YENİLER: NKE, SBUX vs) ---
         "WMT", "COST", "PG", "KO", "PEP", "XOM", "CVX", "DIS", "MCD", "NKE", "SBUX",
         "TGT", "LOW", "HD", "TJX", "LULU", "MDLZ", "PM", "MO", "CL", "KMB", "EL",
-        
-        # --- ENERJİ & HAMMADDE ---
         "OXY", "SLB", "HAL", "COP", "EOG", "FCX", "NEM", "LIN", "DOW", "SHW", "NEE",
         "DUK", "SO",
-        
-        # --- MEVCUT ÖZEL LİSTEN (KORUNDU) ---
         "NVDX", "AAPU", "GGLL", "AMZZ", "METU", "AMZP", "MARA", "QQQT",
         "O", "AGNC", "ORC", "SPHD", "DX", "OXLC", "GLAD", "GAIN", "GOOD", "LAND", "SRET",
         "QYLD", "XYLD", "SDIV", "DIV", "RYLD", "JEPI", "JEPQ", "EFC", "SCM", "PSEC",
@@ -209,8 +230,6 @@ def get_us():
         "OMCL", "POWL", "DXPE", "TLN", "RH", "TOST", "NU", "MOS", "AES", "ASRT", "WRD",
         "CRS", "LUV", "ALL", "AYI", "APTV", "BIIB", "FTI", "VERU", "AZO", "CEG", "NVO",
         "MRK",
-        
-        # --- ETF'ler ---
         "AGQ", "UGL", "LIT", "QQQ", "TQQQ", "UAMY", "WEAT", "GOOP", "QLD", "YINN",
         "IGM", "SPY", "PFIX", "TLT", "TLTW", "BIL", "VOO", "VTI", "BND", "VYM", "SCHD"
     ]
@@ -228,14 +247,13 @@ def fetch_and_analyze(symbol, typ, tf_conf, use_ext, is_debug=False):
             df['time'] = pd.to_datetime(df['time'], unit='ms')
             df.set_index('time', inplace=True)
         else:
-            # FIX: auto_adjust=False ile ham fiyat
             df = yf.download(symbol, period=tf_conf['yf_per'], interval=tf_conf['yf'], prepost=use_ext, auto_adjust=False, progress=False)
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             df.rename(columns=lambda x: x.lower(), inplace=True)
             if tf_conf['resample']: df = convert_4h(df)
             
         if df.empty: return None
-        return analyze(df, symbol, dema_len, st_atr_len, st_factor, freshness, use_dema_filter, is_debug)
+        return analyze(df, symbol, dema_len, st_atr_len, st_factor, freshness, adx_len, use_dema_filter, is_debug)
     except Exception as e:
         if is_debug: st.error(f"Hata: {e}")
         return None
@@ -243,7 +261,7 @@ def fetch_and_analyze(symbol, typ, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 5. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V19 (UNIVERSE)")
+st.title("🚀 BAŞKAN TREND HUNTER V21 (MOMENTUM)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
