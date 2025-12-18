@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V23", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V24", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -16,7 +16,7 @@ tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Gün", "4 Saat", "1 Saat", "
 
 tf_map = {
     "1 Gün":    {"interval": "1d", "period": "5y", "custom_4h": False}, 
-    "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, # 1h çekip 4h yapacağız
+    "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, # 1h çekip işleyeceğiz
     "1 Saat":   {"interval": "1h", "period": "1y", "custom_4h": False},
     "15 Dakika":{"interval": "15m", "period": "1mo", "custom_4h": False},
     "5 Dakika": {"interval": "5m", "period": "1mo", "custom_4h": False}
@@ -39,7 +39,7 @@ adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: RH)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: BTC-USD)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
@@ -49,43 +49,33 @@ manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
 start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. ÖZEL MUM MİMARI (NEW YORK SAATİNE GÖRE)
+# 2. ÖZEL MUM MİMARI (HİBRİT YAPILDI)
 # ==========================================
 def resample_custom_us_4h(df_1h):
     """
-    Yahoo'dan gelen UTC veriyi New York saatine çevirip,
+    SADECE ABD Hisseleri için:
+    Yahoo'dan gelen veriyi New York saatine çevirip,
     TradingView usulü (09:30-13:30 ve 13:30-16:00) mumları oluşturur.
     """
     if df_1h.empty: return df_1h
 
-    # 1. KRİTİK ADIM: TIMEZONE DÖNÜŞÜMÜ
-    # Yahoo verisi genellikle UTC gelir veya timezone bilgisi içerir.
-    # Bunu zorla New York saatine çeviriyoruz.
+    # Timezone Dönüşümü (New York)
     if df_1h.index.tz is None:
-        # Eğer naive (tz yok) geldiyse önce UTC kabul et, sonra çevir
         df_1h.index = df_1h.index.tz_localize('UTC').tz_convert('America/New_York')
     else:
-        # Zaten tz varsa direkt çevir
         df_1h.index = df_1h.index.tz_convert('America/New_York')
 
-    # 2. Sadece Borsa Saatleri (09:30 - 16:00 Arası Veriler)
+    # Sadece Borsa Saatleri
     df_1h = df_1h.between_time('09:30', '16:00')
     
-    # 3. Gruplama
     agg_candles = []
     
-    # Gün gün işlem yap
     for date, group in df_1h.groupby(df_1h.index.date):
-        
-        # --- 1. MUM (Sabah: 09:30, 10:30, 11:30, 12:30 Başlangıçlı Mumlar) ---
-        # Bu mumların kapanışı en geç 13:30 olur.
-        # Mantık: Saati 13'ten küçük olanlar SABAH grubudur.
-        # (09, 10, 11, 12)
+        # 1. MUM (Sabah: 09:30 - 13:30)
         session1 = group[group.index.hour < 13] 
-        
         if not session1.empty:
             agg_candles.append({
-                'time': session1.index[0], # Mumun saati (örn 09:30)
+                'time': session1.index[0],
                 'open': session1['open'].iloc[0],
                 'high': session1['high'].max(),
                 'low': session1['low'].min(),
@@ -93,22 +83,19 @@ def resample_custom_us_4h(df_1h):
                 'volume': session1['volume'].sum()
             })
             
-        # --- 2. MUM (Öğlen: 13:30, 14:30, 15:30 Başlangıçlı Mumlar) ---
-        # Mantık: Saati 13 ve üstü olanlar ÖĞLEN grubudur.
+        # 2. MUM (Öğlen: 13:30 - 16:00)
         session2 = group[group.index.hour >= 13]
-        
         if not session2.empty:
             agg_candles.append({
-                'time': session2.index[0], # Mumun saati (örn 13:30)
+                'time': session2.index[0],
                 'open': session2['open'].iloc[0],
                 'high': session2['high'].max(),
                 'low': session2['low'].min(),
-                'close': session2['close'].iloc[-1], # Gün kapanışı
+                'close': session2['close'].iloc[-1],
                 'volume': session2['volume'].sum()
             })
             
     if not agg_candles: return pd.DataFrame()
-        
     df_4h = pd.DataFrame(agg_candles)
     df_4h.set_index('time', inplace=True)
     return df_4h
@@ -204,8 +191,7 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V23 - NY TIME)")
-        # Timezone bilgisiyle gösterelim
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V24 - HYBRID)")
         last_20 = df.tail(20).copy()
         last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
@@ -293,7 +279,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
     try:
         target_interval = "1h" if tf_conf['custom_4h'] else tf_conf['interval']
         
-        # Yahoo'dan veriyi çek
+        # Yahoo'dan çek
         df = yf.download(
             symbol, 
             period=tf_conf['period'], 
@@ -308,15 +294,28 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.rename(columns=lambda x: x.lower(), inplace=True)
         
-        # 4 Saatlik İşleme (Timezone Duyarlı)
+        # --- 4 SAATLİK ÖZEL İŞLEM MANTIĞI (V24 HİBRİT) ---
         if tf_conf['custom_4h']:
-            if use_ext:
-                 agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
-                 df = df.resample('4h').agg(agg_dict).dropna()
+            
+            # KONTROL 1: Sembol Kripto mu? (Örn: BTC-USD)
+            is_crypto = symbol.endswith("-USD")
+            
+            if is_crypto:
+                # Kriptoysa: STANDART 4 SAATLİK BÖLME YAP (7/24)
+                # Çünkü 09:30-16:00 filtresi kriptoyu bozar.
+                agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
+                df = df.resample('4h').agg(agg_dict).dropna()
+            
             else:
-                 # NY Saatine Göre Özel Birleştirme
-                 df = resample_custom_us_4h(df)
-                 if df.empty: return None
+                # Hisseyse: NEW YORK SAATİNE GÖRE BÖL
+                if use_ext:
+                    # Ext Hours açıksa yine standart resample mantıklıdır
+                    agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
+                    df = df.resample('4h').agg(agg_dict).dropna()
+                else:
+                    # Normal Seans (RTH) için Özel Fonksiyon
+                    df = resample_custom_us_4h(df)
+                    if df.empty: return None
 
         return analyze(df, symbol, dema_len, st_atr_len, st_factor, freshness, adx_len, use_dema_filter, is_debug)
     except Exception as e:
@@ -326,7 +325,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V23 (NEW YORK)")
+st.title("🚀 BAŞKAN TREND HUNTER V24 (HYBRID)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
