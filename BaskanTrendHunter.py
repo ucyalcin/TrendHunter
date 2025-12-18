@@ -1,31 +1,37 @@
 import streamlit as st
-import ccxt
-import yfinance as yf
+import yfinance as yf # Artık tek veri sağlayıcı bu
 import pandas as pd
 import numpy as np
-from datetime import datetime
+from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V21", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V22", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
 # ==========================================
 st.sidebar.header("STRATEJİ AYARLARI")
 
+# Zaman Dilimi Seçimi
 tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Gün", "4 Saat", "1 Saat", "15 Dakika", "5 Dakika"))
 
+# Zaman Haritası (Yahoo Finance Standartları)
+# Not: 4 Saatlik için '1h' çekip elle işleyeceğiz.
 tf_map = {
-    "1 Gün":    {"ccxt": "1d", "yf": "1d", "yf_per": "5y", "resample": False}, 
-    "4 Saat":   {"ccxt": "4h", "yf": "1h", "yf_per": "2y", "resample": True}, 
-    "1 Saat":   {"ccxt": "1h", "yf": "1h", "yf_per": "1y", "resample": False},
-    "15 Dakika":{"ccxt": "15m", "yf": "15m", "yf_per": "1mo", "resample": False},
-    "5 Dakika": {"ccxt": "5m", "yf": "5m", "yf_per": "1mo", "resample": False}
+    "1 Gün":    {"interval": "1d", "period": "5y", "custom_4h": False}, 
+    "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, # ÖZEL İŞLEM VAR
+    "1 Saat":   {"interval": "1h", "period": "1y", "custom_4h": False},
+    "15 Dakika":{"interval": "15m", "period": "1mo", "custom_4h": False},
+    "5 Dakika": {"interval": "5m", "period": "1mo", "custom_4h": False}
 }
 selected_tf = tf_map[tf_label]
 
 st.sidebar.markdown("---")
+# 4 Saatlikte Extended Hours açılırsa Custom Resampler devre dışı kalır (Karmaşıklığı önlemek için)
 use_ext_hours = st.sidebar.checkbox("Genişletilmiş Saatleri Dahil Et (Pre/Post Market)", value=False)
+
+if tf_label == "4 Saat" and use_ext_hours:
+    st.sidebar.warning("⚠️ Dikkat: 4 Saatlikte Genişletilmiş Saatler açılırsa, TradingView ile %100 eşleşme garantisi verilemez. Normal (RTH) seans önerilir.")
 
 use_dema_filter = st.sidebar.checkbox("Fiyat > DEMA Kuralını Kullan", value=True)
 dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, disabled=not use_dema_filter)
@@ -34,23 +40,81 @@ st_atr_len = st.sidebar.number_input("SuperTrend ATR", value=12)
 st_factor = st.sidebar.number_input("SuperTrend Faktör", value=3.0)
 freshness = st.sidebar.number_input("Sinyal Tazeliği (Son kaç mum?)", min_value=1, value=20, step=1)
 
-# ADX AYARI
+# ADX
 adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 st.sidebar.markdown("---")
-
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: NVDA)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: BTC-USD)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
-use_crypto = st.sidebar.checkbox("KRİPTO (Binance)", value=True)
+use_crypto = st.sidebar.checkbox("KRİPTO (Yahoo)", value=True)
 use_us = st.sidebar.checkbox("ABD BORSASI (Universe List)", value=True)
 manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
 start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. HESAPLAMA MOTORU (ADX + RMA + DEMA)
+# 2. ÖZEL MUM MİMARI (CUSTOM RESAMPLER)
+# ==========================================
+def resample_custom_us_4h(df_1h):
+    """
+    ABD Borsası Normal Seans (09:30 - 16:00) için
+    TradingView uyumlu 4 Saatlik Mum Oluşturucu.
+    1. Mum: 09:30 - 13:30 (4 Saat)
+    2. Mum: 13:30 - 16:00 (2.5 Saat)
+    """
+    # Veri boşsa dön
+    if df_1h.empty: return df_1h
+    
+    # Sadece işlem saatlerini filtrele (Garanti olsun)
+    # Yahoo bazen 09:30 öncesini de getirebilir 1h isteyince.
+    df_1h = df_1h.between_time('09:30', '16:00')
+    
+    # Günlük gruplama
+    grouped = df_1h.groupby(df_1h.index.date)
+    
+    agg_candles = []
+    
+    for date, group in grouped:
+        # --- 1. MUM (09:30 - 13:30) ---
+        # 1h verisinde mum etiketleri başlangıç saatidir.
+        # 09:30, 10:30, 11:30, 12:30 mumları bu gruba girer.
+        session1 = group.between_time('09:30', '13:29')
+        
+        if not session1.empty:
+            agg_candles.append({
+                'time': session1.index[0], # Mumun saati 09:30 olur
+                'open': session1['open'].iloc[0],
+                'high': session1['high'].max(),
+                'low': session1['low'].min(),
+                'close': session1['close'].iloc[-1], # 12:30 mumunun kapanışı (yani 13:30 fiyatı)
+                'volume': session1['volume'].sum()
+            })
+            
+        # --- 2. MUM (13:30 - 16:00) ---
+        # 13:30, 14:30, 15:30 mumları
+        session2 = group.between_time('13:30', '16:00')
+        
+        if not session2.empty:
+            agg_candles.append({
+                'time': session2.index[0], # Mumun saati 13:30 olur
+                'open': session2['open'].iloc[0],
+                'high': session2['high'].max(),
+                'low': session2['low'].min(),
+                'close': session2['close'].iloc[-1], # Gün kapanışı
+                'volume': session2['volume'].sum()
+            })
+            
+    if not agg_candles:
+        return pd.DataFrame()
+        
+    df_4h = pd.DataFrame(agg_candles)
+    df_4h.set_index('time', inplace=True)
+    return df_4h
+
+# ==========================================
+# 3. HESAPLAMA MOTORU
 # ==========================================
 def calculate_dema(series, length):
     ema1 = series.ewm(span=length, adjust=False).mean()
@@ -58,7 +122,7 @@ def calculate_dema(series, length):
     return 2 * ema1 - ema2
 
 def calculate_adx(df, length=14):
-    # TradingView Tarzı RMA ile ADX Hesabı
+    df = df.copy()
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['close'].shift(1))
     df['tr2'] = abs(df['low'] - df['close'].shift(1))
@@ -70,29 +134,24 @@ def calculate_adx(df, length=14):
     df['plus_dm'] = np.where((df['up'] > df['down']) & (df['up'] > 0), df['up'], 0)
     df['minus_dm'] = np.where((df['down'] > df['up']) & (df['down'] > 0), df['down'], 0)
 
-    # Smoothing (RMA)
+    # RMA Smoothing
     df['tr_smooth'] = df['tr'].ewm(alpha=1/length, adjust=False).mean()
     df['plus_dm_smooth'] = df['plus_dm'].ewm(alpha=1/length, adjust=False).mean()
     df['minus_dm_smooth'] = df['minus_dm'].ewm(alpha=1/length, adjust=False).mean()
 
-    # DI Calculation
+    # DI & ADX
     df['plus_di'] = 100 * (df['plus_dm_smooth'] / df['tr_smooth'])
     df['minus_di'] = 100 * (df['minus_dm_smooth'] / df['tr_smooth'])
-
-    # DX and ADX
     df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
     df['adx'] = df['dx'].ewm(alpha=1/length, adjust=False).mean()
-
     return df
 
 def calculate_supertrend(df, period=10, multiplier=3):
     hl2 = (df['high'] + df['low']) / 2
-    
     tr1 = df['high'] - df['low']
     tr2 = abs(df['high'] - df['close'].shift(1))
     tr3 = abs(df['low'] - df['close'].shift(1))
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
-    
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
 
     up = hl2 - (multiplier * atr)
@@ -131,7 +190,7 @@ def calculate_supertrend(df, period=10, multiplier=3):
     return df
 
 # ==========================================
-# 3. ANALİZ
+# 4. ANALİZ MOTORU
 # ==========================================
 def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_debug=False):
     if len(df) < (dema_len + 50): 
@@ -140,12 +199,12 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
 
     df['DEMA'] = calculate_dema(df['close'], dema_len)
     df = calculate_supertrend(df, st_atr, st_fact)
-    df = calculate_adx(df, adx_len) 
+    df = calculate_adx(df, adx_len)
     
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V21)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V22)")
         last_20 = df.tail(20).copy()
         last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
@@ -154,13 +213,10 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
         last_20['ADX'] = last_20['adx'].round(2)
         st.dataframe(last_20[['Zaman_Str', 'Fiyat', 'DEMA', 'Trend', 'ADX']], use_container_width=True)
 
-    # 1. Şu an BUY mu?
     if current['ST_Trend'] != 1: return None
     
-    # 2. Tazelik Kontrolü
     lookback = int(fresh) + 1
     recent_trends = df['ST_Trend'].tail(lookback).values
-    
     if -1 not in recent_trends: return None 
         
     candles_ago = 0
@@ -174,7 +230,6 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
             
     if not found_signal: return None 
 
-    # 3. Sinyal Anında Fiyat DEMA Üstünde miydi?
     signal_candle_idx = -(1 + candles_ago)
     signal_candle = df.iloc[signal_candle_idx]
     
@@ -187,23 +242,23 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
         "Fiyat": round(current['close'], 2),
         "DEMA": round(current['DEMA'], 2),
         "Sinyal": f"🔥 {candles_ago} Mum Önce",
-        "ADX Sinyal": round(signal_candle['adx'], 2), # SİNYAL ANINDAKİ DEĞER
-        "ADX Güncel": round(current['adx'], 2),       # ŞU ANKİ DEĞER
+        "ADX Sinyal": round(signal_candle['adx'], 2),
+        "ADX Güncel": round(current['adx'], 2),
         "Durum": "YENİ TREND"
     }
 
 # ==========================================
-# 4. VERİ ÇEKME & LİSTELER
+# 5. VERİ ÇEKME & LİSTELER
 # ==========================================
-def get_crypto():
-    try:
-        x = ccxt.binance()
-        m = x.load_markets()
-        return [s for s in m if s.endswith('/USDT') and 'UP' not in s and 'DOWN' not in s]
-    except: return []
+def get_crypto_yahoo():
+    # Binance yerine Yahoo (Majörler)
+    return [
+        "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "ADA-USD", "DOGE-USD", 
+        "AVAX-USD", "TRX-USD", "DOT-USD", "LINK-USD", "MATIC-USD", "LTC-USD", "SHIB-USD",
+        "BCH-USD", "ATOM-USD", "XLM-USD", "UNI7083-USD", "NEAR-USD", "APT21794-USD"
+    ]
 
-def get_us():
-    # V19 UNIVERSE LIST
+def get_us_universe():
     return [
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD", "AVGO", "NFLX",
         "INTC", "QCOM", "CSCO", "DELL", "APP", "TSM", "BIDU", "BABA", "PLTR", "CRWD",
@@ -234,56 +289,75 @@ def get_us():
         "IGM", "SPY", "PFIX", "TLT", "TLTW", "BIL", "VOO", "VTI", "BND", "VYM", "SCHD"
     ]
 
-def convert_4h(df):
-    return df.resample('4h', offset='30min').agg({'open':'first','high':'max','low':'min','close':'last','volume':'sum'}).dropna()
-
-def fetch_and_analyze(symbol, typ, tf_conf, use_ext, is_debug=False):
+def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
     try:
-        df = pd.DataFrame()
-        if typ == 'CRYPTO':
-            x = ccxt.binance()
-            ohlcv = x.fetch_ohlcv(symbol, tf_conf['ccxt'], limit=1500)
-            df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','volume'])
-            df['time'] = pd.to_datetime(df['time'], unit='ms')
-            df.set_index('time', inplace=True)
-        else:
-            df = yf.download(symbol, period=tf_conf['yf_per'], interval=tf_conf['yf'], prepost=use_ext, auto_adjust=False, progress=False)
-            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            df.rename(columns=lambda x: x.lower(), inplace=True)
-            if tf_conf['resample']: df = convert_4h(df)
-            
+        # Tek Motor: Yahoo Finance
+        # Eğer özel 4H (Custom) gerekiyorsa '1h' çekiyoruz, değilse kendi interval'i
+        target_interval = "1h" if tf_conf['custom_4h'] else tf_conf['interval']
+        
+        # Extended Hours kontrolü
+        # Eğer Custom 4H yapıyorsak ve Ext Hours Kapalıysa (RTH), Prepost=False olmalı.
+        df = yf.download(
+            symbol, 
+            period=tf_conf['period'], 
+            interval=target_interval, 
+            prepost=use_ext, 
+            auto_adjust=False, 
+            progress=False
+        )
+        
         if df.empty: return None
+        
+        # MultiIndex düzeltmesi
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        df.rename(columns=lambda x: x.lower(), inplace=True)
+        
+        # ÖZEL 4 SAATLİK BİRLEŞTİRİCİ
+        if tf_conf['custom_4h']:
+            # Eğer Genişletilmiş Saatler AÇIKSA, Custom Resampler çalışmaz (Standart 4h çalışır)
+            # Ama biz yukarıda yf.download'a 1h dedik. 
+            # Bu durumda eğer Ext Hours açıksa basit resample, kapalıysa Custom.
+            if use_ext:
+                 # Basit resample (TradingView Ext 4H ile tam tutmayabilir ama en iyi tahmin)
+                 agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
+                 df = df.resample('4h').agg(agg_dict).dropna()
+            else:
+                 # İŞTE BURASI: TradingView RTH 4H Simülasyonu
+                 df = resample_custom_us_4h(df)
+                 if df.empty: return None
+
         return analyze(df, symbol, dema_len, st_atr_len, st_factor, freshness, adx_len, use_dema_filter, is_debug)
     except Exception as e:
         if is_debug: st.error(f"Hata: {e}")
         return None
 
 # ==========================================
-# 5. ARAYÜZ
+# 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V21 (MOMENTUM)")
+st.title("🚀 BAŞKAN TREND HUNTER V22 (MİMAR)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
-    typ = 'CRYPTO' if '/' in debug_symbol else 'US'
-    fetch_and_analyze(debug_symbol.strip().upper(), typ, selected_tf, use_ext_hours, is_debug=True)
+    fetch_and_analyze(debug_symbol.strip().upper(), selected_tf, use_ext_hours, is_debug=True)
 
 if start_btn:
     results = []
     tasks = []
     
-    if use_crypto: tasks.extend([(s, 'CRYPTO') for s in get_crypto()])
-    if use_us: tasks.extend([(s, 'US') for s in get_us()])
+    # Listeler artık temiz (Sadece Yahoo formatında)
+    if use_crypto: tasks.extend(get_crypto_yahoo())
+    if use_us: tasks.extend(get_us_universe())
+    
     if manual_input: 
-        for m in manual_input.split(','): tasks.append((m.strip(), 'CRYPTO' if '/' in m else 'US'))
+        for m in manual_input.split(','): tasks.append(m.strip())
 
     bar = st.progress(0)
     status = st.empty()
     
-    for i, (sym, typ) in enumerate(tasks):
+    for i, sym in enumerate(tasks):
         bar.progress((i+1)/len(tasks))
         status.text(f"Analiz: {sym}")
-        res = fetch_and_analyze(sym, typ, selected_tf, use_ext_hours)
+        res = fetch_and_analyze(sym, selected_tf, use_ext_hours)
         if res: results.append(res)
 
     bar.empty()
