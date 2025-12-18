@@ -1,25 +1,22 @@
 import streamlit as st
-import yfinance as yf # Artık tek veri sağlayıcı bu
+import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V22", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V23", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
 # ==========================================
 st.sidebar.header("STRATEJİ AYARLARI")
 
-# Zaman Dilimi Seçimi
 tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Gün", "4 Saat", "1 Saat", "15 Dakika", "5 Dakika"))
 
-# Zaman Haritası (Yahoo Finance Standartları)
-# Not: 4 Saatlik için '1h' çekip elle işleyeceğiz.
 tf_map = {
     "1 Gün":    {"interval": "1d", "period": "5y", "custom_4h": False}, 
-    "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, # ÖZEL İŞLEM VAR
+    "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, # 1h çekip 4h yapacağız
     "1 Saat":   {"interval": "1h", "period": "1y", "custom_4h": False},
     "15 Dakika":{"interval": "15m", "period": "1mo", "custom_4h": False},
     "5 Dakika": {"interval": "5m", "period": "1mo", "custom_4h": False}
@@ -27,11 +24,10 @@ tf_map = {
 selected_tf = tf_map[tf_label]
 
 st.sidebar.markdown("---")
-# 4 Saatlikte Extended Hours açılırsa Custom Resampler devre dışı kalır (Karmaşıklığı önlemek için)
-use_ext_hours = st.sidebar.checkbox("Genişletilmiş Saatleri Dahil Et (Pre/Post Market)", value=False)
 
+use_ext_hours = st.sidebar.checkbox("Genişletilmiş Saatleri Dahil Et (Pre/Post Market)", value=False)
 if tf_label == "4 Saat" and use_ext_hours:
-    st.sidebar.warning("⚠️ Dikkat: 4 Saatlikte Genişletilmiş Saatler açılırsa, TradingView ile %100 eşleşme garantisi verilemez. Normal (RTH) seans önerilir.")
+    st.sidebar.warning("⚠️ 4 Saatlikte Ext. Hours önerilmez. TradingView ile tutarsızlık olabilir.")
 
 use_dema_filter = st.sidebar.checkbox("Fiyat > DEMA Kuralını Kullan", value=True)
 dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, disabled=not use_dema_filter)
@@ -39,13 +35,11 @@ dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, dis
 st_atr_len = st.sidebar.number_input("SuperTrend ATR", value=12)
 st_factor = st.sidebar.number_input("SuperTrend Faktör", value=3.0)
 freshness = st.sidebar.number_input("Sinyal Tazeliği (Son kaç mum?)", min_value=1, value=20, step=1)
-
-# ADX
 adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: BTC-USD)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: RH)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
@@ -55,50 +49,57 @@ manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
 start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. ÖZEL MUM MİMARI (CUSTOM RESAMPLER)
+# 2. ÖZEL MUM MİMARI (NEW YORK SAATİNE GÖRE)
 # ==========================================
 def resample_custom_us_4h(df_1h):
     """
-    ABD Borsası Normal Seans (09:30 - 16:00) için
-    TradingView uyumlu 4 Saatlik Mum Oluşturucu.
-    1. Mum: 09:30 - 13:30 (4 Saat)
-    2. Mum: 13:30 - 16:00 (2.5 Saat)
+    Yahoo'dan gelen UTC veriyi New York saatine çevirip,
+    TradingView usulü (09:30-13:30 ve 13:30-16:00) mumları oluşturur.
     """
-    # Veri boşsa dön
     if df_1h.empty: return df_1h
-    
-    # Sadece işlem saatlerini filtrele (Garanti olsun)
-    # Yahoo bazen 09:30 öncesini de getirebilir 1h isteyince.
+
+    # 1. KRİTİK ADIM: TIMEZONE DÖNÜŞÜMÜ
+    # Yahoo verisi genellikle UTC gelir veya timezone bilgisi içerir.
+    # Bunu zorla New York saatine çeviriyoruz.
+    if df_1h.index.tz is None:
+        # Eğer naive (tz yok) geldiyse önce UTC kabul et, sonra çevir
+        df_1h.index = df_1h.index.tz_localize('UTC').tz_convert('America/New_York')
+    else:
+        # Zaten tz varsa direkt çevir
+        df_1h.index = df_1h.index.tz_convert('America/New_York')
+
+    # 2. Sadece Borsa Saatleri (09:30 - 16:00 Arası Veriler)
     df_1h = df_1h.between_time('09:30', '16:00')
     
-    # Günlük gruplama
-    grouped = df_1h.groupby(df_1h.index.date)
-    
+    # 3. Gruplama
     agg_candles = []
     
-    for date, group in grouped:
-        # --- 1. MUM (09:30 - 13:30) ---
-        # 1h verisinde mum etiketleri başlangıç saatidir.
-        # 09:30, 10:30, 11:30, 12:30 mumları bu gruba girer.
-        session1 = group.between_time('09:30', '13:29')
+    # Gün gün işlem yap
+    for date, group in df_1h.groupby(df_1h.index.date):
+        
+        # --- 1. MUM (Sabah: 09:30, 10:30, 11:30, 12:30 Başlangıçlı Mumlar) ---
+        # Bu mumların kapanışı en geç 13:30 olur.
+        # Mantık: Saati 13'ten küçük olanlar SABAH grubudur.
+        # (09, 10, 11, 12)
+        session1 = group[group.index.hour < 13] 
         
         if not session1.empty:
             agg_candles.append({
-                'time': session1.index[0], # Mumun saati 09:30 olur
+                'time': session1.index[0], # Mumun saati (örn 09:30)
                 'open': session1['open'].iloc[0],
                 'high': session1['high'].max(),
                 'low': session1['low'].min(),
-                'close': session1['close'].iloc[-1], # 12:30 mumunun kapanışı (yani 13:30 fiyatı)
+                'close': session1['close'].iloc[-1], 
                 'volume': session1['volume'].sum()
             })
             
-        # --- 2. MUM (13:30 - 16:00) ---
-        # 13:30, 14:30, 15:30 mumları
-        session2 = group.between_time('13:30', '16:00')
+        # --- 2. MUM (Öğlen: 13:30, 14:30, 15:30 Başlangıçlı Mumlar) ---
+        # Mantık: Saati 13 ve üstü olanlar ÖĞLEN grubudur.
+        session2 = group[group.index.hour >= 13]
         
         if not session2.empty:
             agg_candles.append({
-                'time': session2.index[0], # Mumun saati 13:30 olur
+                'time': session2.index[0], # Mumun saati (örn 13:30)
                 'open': session2['open'].iloc[0],
                 'high': session2['high'].max(),
                 'low': session2['low'].min(),
@@ -106,8 +107,7 @@ def resample_custom_us_4h(df_1h):
                 'volume': session2['volume'].sum()
             })
             
-    if not agg_candles:
-        return pd.DataFrame()
+    if not agg_candles: return pd.DataFrame()
         
     df_4h = pd.DataFrame(agg_candles)
     df_4h.set_index('time', inplace=True)
@@ -204,7 +204,8 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V22)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V23 - NY TIME)")
+        # Timezone bilgisiyle gösterelim
         last_20 = df.tail(20).copy()
         last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
@@ -251,7 +252,6 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
 # 5. VERİ ÇEKME & LİSTELER
 # ==========================================
 def get_crypto_yahoo():
-    # Binance yerine Yahoo (Majörler)
     return [
         "BTC-USD", "ETH-USD", "BNB-USD", "SOL-USD", "XRP-USD", "ADA-USD", "DOGE-USD", 
         "AVAX-USD", "TRX-USD", "DOT-USD", "LINK-USD", "MATIC-USD", "LTC-USD", "SHIB-USD",
@@ -291,12 +291,9 @@ def get_us_universe():
 
 def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
     try:
-        # Tek Motor: Yahoo Finance
-        # Eğer özel 4H (Custom) gerekiyorsa '1h' çekiyoruz, değilse kendi interval'i
         target_interval = "1h" if tf_conf['custom_4h'] else tf_conf['interval']
         
-        # Extended Hours kontrolü
-        # Eğer Custom 4H yapıyorsak ve Ext Hours Kapalıysa (RTH), Prepost=False olmalı.
+        # Yahoo'dan veriyi çek
         df = yf.download(
             symbol, 
             period=tf_conf['period'], 
@@ -308,21 +305,16 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
         
         if df.empty: return None
         
-        # MultiIndex düzeltmesi
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.rename(columns=lambda x: x.lower(), inplace=True)
         
-        # ÖZEL 4 SAATLİK BİRLEŞTİRİCİ
+        # 4 Saatlik İşleme (Timezone Duyarlı)
         if tf_conf['custom_4h']:
-            # Eğer Genişletilmiş Saatler AÇIKSA, Custom Resampler çalışmaz (Standart 4h çalışır)
-            # Ama biz yukarıda yf.download'a 1h dedik. 
-            # Bu durumda eğer Ext Hours açıksa basit resample, kapalıysa Custom.
             if use_ext:
-                 # Basit resample (TradingView Ext 4H ile tam tutmayabilir ama en iyi tahmin)
                  agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
                  df = df.resample('4h').agg(agg_dict).dropna()
             else:
-                 # İŞTE BURASI: TradingView RTH 4H Simülasyonu
+                 # NY Saatine Göre Özel Birleştirme
                  df = resample_custom_us_4h(df)
                  if df.empty: return None
 
@@ -334,7 +326,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V22 (MİMAR)")
+st.title("🚀 BAŞKAN TREND HUNTER V23 (NEW YORK)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
@@ -344,7 +336,6 @@ if start_btn:
     results = []
     tasks = []
     
-    # Listeler artık temiz (Sadece Yahoo formatında)
     if use_crypto: tasks.extend(get_crypto_yahoo())
     if use_us: tasks.extend(get_us_universe())
     
