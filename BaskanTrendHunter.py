@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V24", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V26", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -39,17 +39,17 @@ adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: BTC-USD)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: NET)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
 use_crypto = st.sidebar.checkbox("KRİPTO (Yahoo)", value=True)
-use_us = st.sidebar.checkbox("ABD BORSASI (Universe List)", value=True)
+use_us = st.sidebar.checkbox("ABD BORSASI (Galaxy List)", value=True)
 manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
 start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. ÖZEL MUM MİMARI (HİBRİT YAPILDI)
+# 2. ÖZEL MUM MİMARI (HİBRİT)
 # ==========================================
 def resample_custom_us_4h(df_1h):
     """
@@ -191,7 +191,7 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V24 - HYBRID)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V26)")
         last_20 = df.tail(20).copy()
         last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
@@ -246,22 +246,38 @@ def get_crypto_yahoo():
 
 def get_us_universe():
     return [
+        # TEKNOLOJİ & YARI İLETKEN
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD", "AVGO", "NFLX",
         "INTC", "QCOM", "CSCO", "DELL", "APP", "TSM", "BIDU", "BABA", "PLTR", "CRWD",
         "RBRK", "LSCC", "BBAI", "ZM", "ZS", "ZETA", "CLS", "PENG", "SOXL",
         "ADBE", "CRM", "NOW", "ORCL", "IBM", "INTU", "UBER", "ABNB", "BKNG", "PANW",
         "FTNT", "SNOW", "SQ", "SHOP", "U", "ROKU", "DKNG", "HOOD", "PYPL", "MU", "TXN",
-        "LRCX", "ADI", "KLAC", "ARM", "SMCI",
+        "LRCX", "ADI", "KLAC", "ARM", "SMCI", "SNDK", "AMAT", "ON", "MCHP", "CDNS", "SNPS",
+        "DDOG", "NET", "MDB", "TEAM", "TTWO", "EA", "PDD", "JD", "OKTA",
+        
+        # FİNANS
         "JPM", "V", "MA", "BAC", "WFC", "C", "GS", "MS", "BLK", "AXP", "SCHW", "USB",
-        "TRV", "AIG", "SPGI", "COIN", "MSTR",
+        "TRV", "AIG", "SPGI", "COIN", "MSTR", "BRK-B", "PGR", "CB", "CME", "ICE", "COF", "SYF",
+        
+        # ENDÜSTRİ, TELEKOM & SAVUNMA
         "BA", "GE", "F", "GM", "CAT", "DE", "HON", "UNP", "UPS", "FDX", "LMT", "RTX",
-        "NOC", "GD", "EMR", "MMM", "ETN",
+        "NOC", "GD", "EMR", "MMM", "ETN", "VZ", "T", "TMUS", "CMCSA", "ADP", "CSX", "NSC",
+        "WM", "RSG", "RIVN", "LCID",
+        
+        # SAĞLIK
         "JNJ", "PFE", "MRNA", "REGN", "LLY", "UNH", "ABBV", "AMGN", "BMY", "GILD", "ISRG",
-        "SYK", "CVS", "TMO", "DHR", "VRTX", "MOH",
+        "SYK", "CVS", "TMO", "DHR", "VRTX", "MOH", "MDT", "BSX", "ZTS", "CI", "HUM",
+        
+        # PERAKENDE & TÜKETİM
         "WMT", "COST", "PG", "KO", "PEP", "XOM", "CVX", "DIS", "MCD", "NKE", "SBUX",
         "TGT", "LOW", "HD", "TJX", "LULU", "MDLZ", "PM", "MO", "CL", "KMB", "EL",
+        "CMG", "MAR", "KHC", "HSY", "KR",
+        
+        # ENERJİ & HAMMADDE & GAYRİMENKUL
         "OXY", "SLB", "HAL", "COP", "EOG", "FCX", "NEM", "LIN", "DOW", "SHW", "NEE",
-        "DUK", "SO",
+        "DUK", "SO", "MPC", "APD", "ECL", "NUE", "PLD", "AMT", "CCI", "EQIX", "PSA",
+        
+        # SENİN ÖZEL LİSTEN
         "NVDX", "AAPU", "GGLL", "AMZZ", "METU", "AMZP", "MARA", "QQQT",
         "O", "AGNC", "ORC", "SPHD", "DX", "OXLC", "GLAD", "GAIN", "GOOD", "LAND", "SRET",
         "QYLD", "XYLD", "SDIV", "DIV", "RYLD", "JEPI", "JEPQ", "EFC", "SCM", "PSEC",
@@ -279,7 +295,6 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
     try:
         target_interval = "1h" if tf_conf['custom_4h'] else tf_conf['interval']
         
-        # Yahoo'dan çek
         df = yf.download(
             symbol, 
             period=tf_conf['period'], 
@@ -294,26 +309,17 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.rename(columns=lambda x: x.lower(), inplace=True)
         
-        # --- 4 SAATLİK ÖZEL İŞLEM MANTIĞI (V24 HİBRİT) ---
         if tf_conf['custom_4h']:
-            
-            # KONTROL 1: Sembol Kripto mu? (Örn: BTC-USD)
             is_crypto = symbol.endswith("-USD")
             
             if is_crypto:
-                # Kriptoysa: STANDART 4 SAATLİK BÖLME YAP (7/24)
-                # Çünkü 09:30-16:00 filtresi kriptoyu bozar.
                 agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
                 df = df.resample('4h').agg(agg_dict).dropna()
-            
             else:
-                # Hisseyse: NEW YORK SAATİNE GÖRE BÖL
                 if use_ext:
-                    # Ext Hours açıksa yine standart resample mantıklıdır
                     agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
                     df = df.resample('4h').agg(agg_dict).dropna()
                 else:
-                    # Normal Seans (RTH) için Özel Fonksiyon
                     df = resample_custom_us_4h(df)
                     if df.empty: return None
 
@@ -325,7 +331,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V24 (HYBRID)")
+st.title("🚀 BAŞKAN TREND HUNTER V26 (GALAXY)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
