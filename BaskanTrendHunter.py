@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V29", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V30", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -15,9 +15,10 @@ st.sidebar.header("STRATEJİ AYARLARI")
 tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Hafta", "1 Gün", "4 Saat", "1 Saat", "15 Dakika", "5 Dakika"))
 
 tf_map = {
-    # HAFTALIK: Artık '1wk' çekmiyoruz. '1d' çekip kendimiz 'resample' yapacağız.
-    "1 Hafta":  {"interval": "1d", "period": "10y", "custom_weekly": True, "custom_4h": False}, 
-    "1 Gün":    {"interval": "1d", "period": "5y", "custom_weekly": False, "custom_4h": False}, 
+    # HAFTALIK: period="max" (Tüm geçmişi çek ki indikatör hafızası TV ile tutsun)
+    "1 Hafta":  {"interval": "1d", "period": "max", "custom_weekly": True, "custom_4h": False}, 
+    # GÜNLÜK: 10y yeterli olabilir ama garanti olsun diye max yapılabilir (hız düşerse 10y döneriz)
+    "1 Gün":    {"interval": "1d", "period": "max", "custom_weekly": False, "custom_4h": False}, 
     "4 Saat":   {"interval": "1h", "period": "2y", "custom_weekly": False, "custom_4h": True}, 
     "1 Saat":   {"interval": "1h", "period": "1y", "custom_weekly": False, "custom_4h": False},
     "15 Dakika":{"interval": "15m", "period": "1mo", "custom_weekly": False, "custom_4h": False},
@@ -51,18 +52,18 @@ manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
 start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. ÖZEL MUM MİMARI (HİBRİT + HAFTALIK)
+# 2. ÖZEL MUM MİMARI (INFINITY)
 # ==========================================
 def resample_custom_us_4h(df_1h):
     if df_1h.empty: return df_1h
-
+    
+    # Timezone Fix
     if df_1h.index.tz is None:
         df_1h.index = df_1h.index.tz_localize('UTC').tz_convert('America/New_York')
     else:
         df_1h.index = df_1h.index.tz_convert('America/New_York')
 
     df_1h = df_1h.between_time('09:30', '16:00')
-    
     agg_candles = []
     
     for date, group in df_1h.groupby(df_1h.index.date):
@@ -93,15 +94,13 @@ def resample_custom_us_4h(df_1h):
     df_4h.set_index('time', inplace=True)
     return df_4h
 
-# --- YENİ EKLENEN: HAFTALIK MUM OLUŞTURUCU ---
 def resample_to_weekly(df_daily):
     """
     Günlük veriden Haftalık (Cuma Kapanışlı) mum oluşturur.
-    W-FRI: Haftayı Cuma günü bitirir.
     """
     if df_daily.empty: return df_daily
     
-    # Mantık: 'W-FRI' pandas'ta Cuma bitişli haftalık gruplama yapar.
+    # 'W-FRI': Cuma bitişli hafta
     agg_dict = {
         'open': 'first',
         'high': 'max',
@@ -109,10 +108,7 @@ def resample_to_weekly(df_daily):
         'close': 'last',
         'volume': 'sum'
     }
-    
-    # Resample yap ve boş haftaları at
     df_weekly = df_daily.resample('W-FRI').agg(agg_dict).dropna()
-    
     return df_weekly
 
 # ==========================================
@@ -147,11 +143,14 @@ def calculate_adx(df, length=14):
     return df
 
 def calculate_supertrend(df, period=10, multiplier=3):
+    # TradingView Standardı HL2
     hl2 = (df['high'] + df['low']) / 2
     tr1 = df['high'] - df['low']
     tr2 = abs(df['high'] - df['close'].shift(1))
     tr3 = abs(df['low'] - df['close'].shift(1))
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    
+    # ATR (RMA) Initialization
     atr = tr.ewm(alpha=1/period, adjust=False).mean()
 
     up = hl2 - (multiplier * atr)
@@ -165,6 +164,7 @@ def calculate_supertrend(df, period=10, multiplier=3):
     up_val = up.values
     dn_val = dn.values
     
+    # İlk değer atamaları
     trend_up[0] = up_val[0]
     trend_dn[0] = dn_val[0]
     
@@ -204,9 +204,9 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V29)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V30)")
         last_20 = df.tail(20).copy()
-        last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
+        last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d') # Sadece tarih yeterli
         last_20['Fiyat'] = last_20['close'].round(2)
         last_20['DEMA'] = last_20['DEMA'].round(2)
         last_20['Trend'] = np.where(last_20['ST_Trend'] == 1, "🟢 BUY", "🔴 SELL")
@@ -259,7 +259,6 @@ def get_crypto_yahoo():
 
 def get_us_universe():
     return [
-        # TEKNOLOJİ & YARI İLETKEN
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD", "AVGO", "NFLX",
         "INTC", "QCOM", "CSCO", "DELL", "APP", "TSM", "BIDU", "BABA", "PLTR", "CRWD",
         "RBRK", "LSCC", "BBAI", "ZM", "ZS", "ZETA", "CLS", "PENG", "SOXL",
@@ -267,30 +266,18 @@ def get_us_universe():
         "FTNT", "SNOW", "SQ", "SHOP", "U", "ROKU", "DKNG", "HOOD", "PYPL", "MU", "TXN",
         "LRCX", "ADI", "KLAC", "ARM", "SMCI", "SNDK", "AMAT", "ON", "MCHP", "CDNS", "SNPS",
         "DDOG", "NET", "MDB", "TEAM", "TTWO", "EA", "PDD", "JD", "OKTA",
-        
-        # FİNANS
         "JPM", "V", "MA", "BAC", "WFC", "C", "GS", "MS", "BLK", "AXP", "SCHW", "USB",
         "TRV", "AIG", "SPGI", "COIN", "MSTR", "BRK-B", "PGR", "CB", "CME", "ICE", "COF", "SYF",
-        
-        # ENDÜSTRİ, TELEKOM & SAVUNMA
         "BA", "GE", "F", "GM", "CAT", "DE", "HON", "UNP", "UPS", "FDX", "LMT", "RTX",
         "NOC", "GD", "EMR", "MMM", "ETN", "VZ", "T", "TMUS", "CMCSA", "ADP", "CSX", "NSC",
         "WM", "RSG", "RIVN", "LCID",
-        
-        # SAĞLIK
         "JNJ", "PFE", "MRNA", "REGN", "LLY", "UNH", "ABBV", "AMGN", "BMY", "GILD", "ISRG",
         "SYK", "CVS", "TMO", "DHR", "VRTX", "MOH", "MDT", "BSX", "ZTS", "CI", "HUM",
-        
-        # PERAKENDE & TÜKETİM
         "WMT", "COST", "PG", "KO", "PEP", "XOM", "CVX", "DIS", "MCD", "NKE", "SBUX",
         "TGT", "LOW", "HD", "TJX", "LULU", "MDLZ", "PM", "MO", "CL", "KMB", "EL",
         "CMG", "MAR", "KHC", "HSY", "KR",
-        
-        # ENERJİ & HAMMADDE & GAYRİMENKUL
         "OXY", "SLB", "HAL", "COP", "EOG", "FCX", "NEM", "LIN", "DOW", "SHW", "NEE",
         "DUK", "SO", "MPC", "APD", "ECL", "NUE", "PLD", "AMT", "CCI", "EQIX", "PSA",
-        
-        # SENİN ÖZEL LİSTEN
         "NVDX", "AAPU", "GGLL", "AMZZ", "METU", "AMZP", "MARA", "QQQT",
         "O", "AGNC", "ORC", "SPHD", "DX", "OXLC", "GLAD", "GAIN", "GOOD", "LAND", "SRET",
         "QYLD", "XYLD", "SDIV", "DIV", "RYLD", "JEPI", "JEPQ", "EFC", "SCM", "PSEC",
@@ -306,9 +293,7 @@ def get_us_universe():
 
 def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
     try:
-        # HEDEF INTERVAL'I BELİRLE
-        # Eğer özel haftalık (custom_weekly) ise -> '1d' çek
-        # Eğer özel 4h (custom_4h) ise -> '1h' çek
+        # HEDEF INTERVAL
         if tf_conf.get('custom_weekly'):
             target_interval = '1d'
         elif tf_conf.get('custom_4h'):
@@ -316,6 +301,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
         else:
             target_interval = tf_conf['interval']
         
+        # PERIOD='MAX' (Sonsuzluk Modu)
         df = yf.download(
             symbol, 
             period=tf_conf['period'], 
@@ -330,15 +316,10 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.rename(columns=lambda x: x.lower(), inplace=True)
         
-        # --- ÖZEL İŞLEMLER ---
-        
-        # 1. HAFTALIK İÇİN (YENİ ÖZELLİK)
         if tf_conf.get('custom_weekly'):
-            # Günlük veriyi alıp, Cuma kapanışlı haftalığa çeviriyoruz.
             df = resample_to_weekly(df)
             if df.empty: return None
 
-        # 2. 4 SAATLİK İÇİN (HİBRİT ÖZELLİK)
         elif tf_conf.get('custom_4h'):
             is_crypto = symbol.endswith("-USD")
             if is_crypto:
@@ -360,7 +341,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V29 (CONSTRUCTOR)")
+st.title("🚀 BAŞKAN TREND HUNTER V30 (INFINITY)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
