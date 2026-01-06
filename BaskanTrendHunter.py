@@ -5,23 +5,23 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V28", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V29", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
 # ==========================================
 st.sidebar.header("STRATEJİ AYARLARI")
 
-# 1 Hafta seçeneği en başa eklendi
 tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Hafta", "1 Gün", "4 Saat", "1 Saat", "15 Dakika", "5 Dakika"))
 
 tf_map = {
-    "1 Hafta":  {"interval": "1wk", "period": "10y", "custom_4h": False}, # YENİ: Haftalık (10 Yıllık veri çeker)
-    "1 Gün":    {"interval": "1d", "period": "5y", "custom_4h": False}, 
-    "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, # 1h çekip işleyeceğiz
-    "1 Saat":   {"interval": "1h", "period": "1y", "custom_4h": False},
-    "15 Dakika":{"interval": "15m", "period": "1mo", "custom_4h": False},
-    "5 Dakika": {"interval": "5m", "period": "1mo", "custom_4h": False}
+    # HAFTALIK: Artık '1wk' çekmiyoruz. '1d' çekip kendimiz 'resample' yapacağız.
+    "1 Hafta":  {"interval": "1d", "period": "10y", "custom_weekly": True, "custom_4h": False}, 
+    "1 Gün":    {"interval": "1d", "period": "5y", "custom_weekly": False, "custom_4h": False}, 
+    "4 Saat":   {"interval": "1h", "period": "2y", "custom_weekly": False, "custom_4h": True}, 
+    "1 Saat":   {"interval": "1h", "period": "1y", "custom_weekly": False, "custom_4h": False},
+    "15 Dakika":{"interval": "15m", "period": "1mo", "custom_weekly": False, "custom_4h": False},
+    "5 Dakika": {"interval": "5m", "period": "1mo", "custom_weekly": False, "custom_4h": False}
 }
 selected_tf = tf_map[tf_label]
 
@@ -41,7 +41,7 @@ adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: AAPL)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: FCX)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
@@ -51,29 +51,21 @@ manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
 start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. ÖZEL MUM MİMARI (HİBRİT)
+# 2. ÖZEL MUM MİMARI (HİBRİT + HAFTALIK)
 # ==========================================
 def resample_custom_us_4h(df_1h):
-    """
-    SADECE ABD Hisseleri için:
-    Yahoo'dan gelen veriyi New York saatine çevirip,
-    TradingView usulü (09:30-13:30 ve 13:30-16:00) mumları oluşturur.
-    """
     if df_1h.empty: return df_1h
 
-    # Timezone Dönüşümü (New York)
     if df_1h.index.tz is None:
         df_1h.index = df_1h.index.tz_localize('UTC').tz_convert('America/New_York')
     else:
         df_1h.index = df_1h.index.tz_convert('America/New_York')
 
-    # Sadece Borsa Saatleri
     df_1h = df_1h.between_time('09:30', '16:00')
     
     agg_candles = []
     
     for date, group in df_1h.groupby(df_1h.index.date):
-        # 1. MUM (Sabah: 09:30 - 13:30)
         session1 = group[group.index.hour < 13] 
         if not session1.empty:
             agg_candles.append({
@@ -85,7 +77,6 @@ def resample_custom_us_4h(df_1h):
                 'volume': session1['volume'].sum()
             })
             
-        # 2. MUM (Öğlen: 13:30 - 16:00)
         session2 = group[group.index.hour >= 13]
         if not session2.empty:
             agg_candles.append({
@@ -101,6 +92,28 @@ def resample_custom_us_4h(df_1h):
     df_4h = pd.DataFrame(agg_candles)
     df_4h.set_index('time', inplace=True)
     return df_4h
+
+# --- YENİ EKLENEN: HAFTALIK MUM OLUŞTURUCU ---
+def resample_to_weekly(df_daily):
+    """
+    Günlük veriden Haftalık (Cuma Kapanışlı) mum oluşturur.
+    W-FRI: Haftayı Cuma günü bitirir.
+    """
+    if df_daily.empty: return df_daily
+    
+    # Mantık: 'W-FRI' pandas'ta Cuma bitişli haftalık gruplama yapar.
+    agg_dict = {
+        'open': 'first',
+        'high': 'max',
+        'low': 'min',
+        'close': 'last',
+        'volume': 'sum'
+    }
+    
+    # Resample yap ve boş haftaları at
+    df_weekly = df_daily.resample('W-FRI').agg(agg_dict).dropna()
+    
+    return df_weekly
 
 # ==========================================
 # 3. HESAPLAMA MOTORU
@@ -123,12 +136,10 @@ def calculate_adx(df, length=14):
     df['plus_dm'] = np.where((df['up'] > df['down']) & (df['up'] > 0), df['up'], 0)
     df['minus_dm'] = np.where((df['down'] > df['up']) & (df['down'] > 0), df['down'], 0)
 
-    # RMA Smoothing
     df['tr_smooth'] = df['tr'].ewm(alpha=1/length, adjust=False).mean()
     df['plus_dm_smooth'] = df['plus_dm'].ewm(alpha=1/length, adjust=False).mean()
     df['minus_dm_smooth'] = df['minus_dm'].ewm(alpha=1/length, adjust=False).mean()
 
-    # DI & ADX
     df['plus_di'] = 100 * (df['plus_dm_smooth'] / df['tr_smooth'])
     df['minus_di'] = 100 * (df['minus_dm_smooth'] / df['tr_smooth'])
     df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
@@ -193,7 +204,7 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V28)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V29)")
         last_20 = df.tail(20).copy()
         last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
@@ -295,7 +306,15 @@ def get_us_universe():
 
 def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
     try:
-        target_interval = "1h" if tf_conf['custom_4h'] else tf_conf['interval']
+        # HEDEF INTERVAL'I BELİRLE
+        # Eğer özel haftalık (custom_weekly) ise -> '1d' çek
+        # Eğer özel 4h (custom_4h) ise -> '1h' çek
+        if tf_conf.get('custom_weekly'):
+            target_interval = '1d'
+        elif tf_conf.get('custom_4h'):
+            target_interval = '1h'
+        else:
+            target_interval = tf_conf['interval']
         
         df = yf.download(
             symbol, 
@@ -311,9 +330,17 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         df.rename(columns=lambda x: x.lower(), inplace=True)
         
-        if tf_conf['custom_4h']:
+        # --- ÖZEL İŞLEMLER ---
+        
+        # 1. HAFTALIK İÇİN (YENİ ÖZELLİK)
+        if tf_conf.get('custom_weekly'):
+            # Günlük veriyi alıp, Cuma kapanışlı haftalığa çeviriyoruz.
+            df = resample_to_weekly(df)
+            if df.empty: return None
+
+        # 2. 4 SAATLİK İÇİN (HİBRİT ÖZELLİK)
+        elif tf_conf.get('custom_4h'):
             is_crypto = symbol.endswith("-USD")
-            
             if is_crypto:
                 agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
                 df = df.resample('4h').agg(agg_dict).dropna()
@@ -333,7 +360,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V28 (WEEKLY VISION)")
+st.title("🚀 BAŞKAN TREND HUNTER V29 (CONSTRUCTOR)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
