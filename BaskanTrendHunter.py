@@ -5,16 +5,18 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V26", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V28", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
 # ==========================================
 st.sidebar.header("STRATEJİ AYARLARI")
 
-tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Gün", "4 Saat", "1 Saat", "15 Dakika", "5 Dakika"))
+# 1 Hafta seçeneği en başa eklendi
+tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Hafta", "1 Gün", "4 Saat", "1 Saat", "15 Dakika", "5 Dakika"))
 
 tf_map = {
+    "1 Hafta":  {"interval": "1wk", "period": "10y", "custom_4h": False}, # YENİ: Haftalık (10 Yıllık veri çeker)
     "1 Gün":    {"interval": "1d", "period": "5y", "custom_4h": False}, 
     "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, # 1h çekip işleyeceğiz
     "1 Saat":   {"interval": "1h", "period": "1y", "custom_4h": False},
@@ -39,7 +41,7 @@ adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: NET)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: AAPL)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
@@ -191,7 +193,7 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V26)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V28)")
         last_20 = df.tail(20).copy()
         last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
@@ -331,7 +333,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V26 (GALAXY)")
+st.title("🚀 BAŞKAN TREND HUNTER V28 (WEEKLY VISION)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
