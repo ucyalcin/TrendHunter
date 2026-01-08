@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V30", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V31", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -15,9 +15,8 @@ st.sidebar.header("STRATEJİ AYARLARI")
 tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Hafta", "1 Gün", "4 Saat", "1 Saat", "15 Dakika", "5 Dakika"))
 
 tf_map = {
-    # HAFTALIK: period="max" (Tüm geçmişi çek ki indikatör hafızası TV ile tutsun)
+    # HAFTALIK: period="max" (PineScript uyumu için tam tarihçe şart)
     "1 Hafta":  {"interval": "1d", "period": "max", "custom_weekly": True, "custom_4h": False}, 
-    # GÜNLÜK: 10y yeterli olabilir ama garanti olsun diye max yapılabilir (hız düşerse 10y döneriz)
     "1 Gün":    {"interval": "1d", "period": "max", "custom_weekly": False, "custom_4h": False}, 
     "4 Saat":   {"interval": "1h", "period": "2y", "custom_weekly": False, "custom_4h": True}, 
     "1 Saat":   {"interval": "1h", "period": "1y", "custom_weekly": False, "custom_4h": False},
@@ -30,7 +29,7 @@ st.sidebar.markdown("---")
 
 use_ext_hours = st.sidebar.checkbox("Genişletilmiş Saatleri Dahil Et (Pre/Post Market)", value=False)
 if tf_label == "4 Saat" and use_ext_hours:
-    st.sidebar.warning("⚠️ 4 Saatlikte Ext. Hours önerilmez. TradingView ile tutarsızlık olabilir.")
+    st.sidebar.warning("⚠️ 4 Saatlikte Ext. Hours önerilmez.")
 
 use_dema_filter = st.sidebar.checkbox("Fiyat > DEMA Kuralını Kullan", value=True)
 dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, disabled=not use_dema_filter)
@@ -52,12 +51,11 @@ manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
 start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. ÖZEL MUM MİMARI (INFINITY)
+# 2. ÖZEL MUM MİMARLARI (4H & Weekly)
 # ==========================================
 def resample_custom_us_4h(df_1h):
     if df_1h.empty: return df_1h
     
-    # Timezone Fix
     if df_1h.index.tz is None:
         df_1h.index = df_1h.index.tz_localize('UTC').tz_convert('America/New_York')
     else:
@@ -95,31 +93,49 @@ def resample_custom_us_4h(df_1h):
     return df_4h
 
 def resample_to_weekly(df_daily):
-    """
-    Günlük veriden Haftalık (Cuma Kapanışlı) mum oluşturur.
-    """
     if df_daily.empty: return df_daily
-    
-    # 'W-FRI': Cuma bitişli hafta
-    agg_dict = {
-        'open': 'first',
-        'high': 'max',
-        'low': 'min',
-        'close': 'last',
-        'volume': 'sum'
-    }
+    # W-FRI: Cuma kapanışlı hafta.
+    agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
     df_weekly = df_daily.resample('W-FRI').agg(agg_dict).dropna()
     return df_weekly
 
 # ==========================================
-# 3. HESAPLAMA MOTORU
+# 3. HESAPLAMA MOTORU (PINE SCRIPT UYUMLU)
 # ==========================================
+
+# YENİ: TradingView ile %100 Uyumlu RMA Fonksiyonu
+def calculate_rma_pine(series, length):
+    """
+    PineScript'teki ta.rma() fonksiyonunun Python karşılığı.
+    İlk değer SMA olmalı, sonraki değerler: (src + (len-1)*prev) / len
+    """
+    series = series.copy()
+    alpha = 1.0 / length
+    rma = np.zeros_like(series)
+    
+    # 1. Başlangıç: İlk 'length' kadar verinin ortalaması (SMA)
+    if len(series) < length: return series # Yetersiz veri
+    
+    # İlk geçerli RMA değeri, listenin 'length-1'. indeksinde oluşur (SMA olarak)
+    rma[:length] = np.nan # Öncesi boş
+    rma[length-1] = series.iloc[:length].mean() 
+    
+    # 2. Döngü (Pandas ewm yerine manuel döngü şart çünkü başlangıç SMA olmalı)
+    series_np = series.values
+    
+    for i in range(length, len(series)):
+        # PineScript RMA Formülü: (x + (length-1) * prev) / length
+        rma[i] = (series_np[i] + (length - 1) * rma[i-1]) / length
+        
+    return pd.Series(rma, index=series.index)
+
 def calculate_dema(series, length):
     ema1 = series.ewm(span=length, adjust=False).mean()
     ema2 = ema1.ewm(span=length, adjust=False).mean()
     return 2 * ema1 - ema2
 
-def calculate_adx(df, length=14):
+def calculate_adx_pine(df, length=14):
+    # ADX hesaplamasında da RMA kullanılır. Pine uyumlu RMA ile güncelledim.
     df = df.copy()
     df['tr0'] = abs(df['high'] - df['low'])
     df['tr1'] = abs(df['high'] - df['close'].shift(1))
@@ -132,26 +148,29 @@ def calculate_adx(df, length=14):
     df['plus_dm'] = np.where((df['up'] > df['down']) & (df['up'] > 0), df['up'], 0)
     df['minus_dm'] = np.where((df['down'] > df['up']) & (df['down'] > 0), df['down'], 0)
 
-    df['tr_smooth'] = df['tr'].ewm(alpha=1/length, adjust=False).mean()
-    df['plus_dm_smooth'] = df['plus_dm'].ewm(alpha=1/length, adjust=False).mean()
-    df['minus_dm_smooth'] = df['minus_dm'].ewm(alpha=1/length, adjust=False).mean()
+    # RMA Pine (Döngülü)
+    df['tr_smooth'] = calculate_rma_pine(df['tr'], length)
+    df['plus_dm_smooth'] = calculate_rma_pine(df['plus_dm'], length)
+    df['minus_dm_smooth'] = calculate_rma_pine(df['minus_dm'], length)
 
     df['plus_di'] = 100 * (df['plus_dm_smooth'] / df['tr_smooth'])
     df['minus_di'] = 100 * (df['minus_dm_smooth'] / df['tr_smooth'])
+    
     df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
-    df['adx'] = df['dx'].ewm(alpha=1/length, adjust=False).mean()
+    
+    # ADX de DX'in RMA'sıdır
+    df['adx'] = calculate_rma_pine(df['dx'], length)
     return df
 
 def calculate_supertrend(df, period=10, multiplier=3):
-    # TradingView Standardı HL2
     hl2 = (df['high'] + df['low']) / 2
     tr1 = df['high'] - df['low']
     tr2 = abs(df['high'] - df['close'].shift(1))
     tr3 = abs(df['low'] - df['close'].shift(1))
     tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
     
-    # ATR (RMA) Initialization
-    atr = tr.ewm(alpha=1/period, adjust=False).mean()
+    # DEĞİŞİKLİK BURADA: Standart ewm yerine PineScript RMA
+    atr = calculate_rma_pine(tr, period)
 
     up = hl2 - (multiplier * atr)
     dn = hl2 + (multiplier * atr)
@@ -164,11 +183,17 @@ def calculate_supertrend(df, period=10, multiplier=3):
     up_val = up.values
     dn_val = dn.values
     
-    # İlk değer atamaları
-    trend_up[0] = up_val[0]
-    trend_dn[0] = dn_val[0]
+    # ATR hesaplaması ilk 'period' kadar NaN olduğu için döngüyü ötelemeliyiz
+    start_idx = period  
     
-    for i in range(1, len(df)):
+    # Başlangıç değerleri
+    trend_up[start_idx-1] = up_val[start_idx-1]
+    trend_dn[start_idx-1] = dn_val[start_idx-1]
+    
+    for i in range(start_idx, len(df)):
+        # Eğer ATR NaN ise (veri başı) atla
+        if np.isnan(atr.iloc[i]): continue
+
         if close[i-1] > trend_up[i-1]:
             trend_up[i] = max(up_val[i], trend_up[i-1])
         else:
@@ -198,15 +223,21 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
         return None
 
     df['DEMA'] = calculate_dema(df['close'], dema_len)
-    df = calculate_supertrend(df, st_atr, st_fact)
-    df = calculate_adx(df, adx_len)
     
+    # Pine Uyumlu SuperTrend ve ADX
+    df = calculate_supertrend(df, st_atr, st_fact)
+    df = calculate_adx_pine(df, adx_len)
+    
+    # İlk kısımlar NaN olacağı için temizle
+    df = df.dropna()
+    if df.empty: return None
+
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V30)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V31 - PINE ENGINE)")
         last_20 = df.tail(20).copy()
-        last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d') # Sadece tarih yeterli
+        last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d')
         last_20['Fiyat'] = last_20['close'].round(2)
         last_20['DEMA'] = last_20['DEMA'].round(2)
         last_20['Trend'] = np.where(last_20['ST_Trend'] == 1, "🟢 BUY", "🔴 SELL")
@@ -293,7 +324,6 @@ def get_us_universe():
 
 def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
     try:
-        # HEDEF INTERVAL
         if tf_conf.get('custom_weekly'):
             target_interval = '1d'
         elif tf_conf.get('custom_4h'):
@@ -301,7 +331,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
         else:
             target_interval = tf_conf['interval']
         
-        # PERIOD='MAX' (Sonsuzluk Modu)
+        # Max Veri (İndikatör sağlığı için)
         df = yf.download(
             symbol, 
             period=tf_conf['period'], 
@@ -341,7 +371,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V30 (INFINITY)")
+st.title("🚀 BAŞKAN TREND HUNTER V31 (PINE EDITION)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
