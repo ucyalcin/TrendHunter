@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V26", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V33 (IMPULSE)", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -16,7 +16,7 @@ tf_label = st.sidebar.selectbox("Zaman Dilimi", ("1 Gün", "4 Saat", "1 Saat", "
 
 tf_map = {
     "1 Gün":    {"interval": "1d", "period": "5y", "custom_4h": False}, 
-    "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, # 1h çekip işleyeceğiz
+    "4 Saat":   {"interval": "1h", "period": "2y", "custom_4h": True}, 
     "1 Saat":   {"interval": "1h", "period": "1y", "custom_4h": False},
     "15 Dakika":{"interval": "15m", "period": "1mo", "custom_4h": False},
     "5 Dakika": {"interval": "5m", "period": "1mo", "custom_4h": False}
@@ -27,7 +27,7 @@ st.sidebar.markdown("---")
 
 use_ext_hours = st.sidebar.checkbox("Genişletilmiş Saatleri Dahil Et (Pre/Post Market)", value=False)
 if tf_label == "4 Saat" and use_ext_hours:
-    st.sidebar.warning("⚠️ 4 Saatlikte Ext. Hours önerilmez. TradingView ile tutarsızlık olabilir.")
+    st.sidebar.warning("⚠️ 4 Saatlikte Ext. Hours önerilmez.")
 
 use_dema_filter = st.sidebar.checkbox("Fiyat > DEMA Kuralını Kullan", value=True)
 dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, disabled=not use_dema_filter)
@@ -35,11 +35,18 @@ dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, dis
 st_atr_len = st.sidebar.number_input("SuperTrend ATR", value=12)
 st_factor = st.sidebar.number_input("SuperTrend Faktör", value=3.0)
 freshness = st.sidebar.number_input("Sinyal Tazeliği (Son kaç mum?)", min_value=1, value=20, step=1)
+
+# MACD Ayarları
+st.sidebar.markdown("### IMPULSE MACD")
+macd_fast = st.sidebar.number_input("Fast Length", value=12)
+macd_slow = st.sidebar.number_input("Slow Length", value=26)
+macd_sig = st.sidebar.number_input("Signal Length", value=9)
+
 adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: NET)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: NVDA)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
@@ -52,26 +59,18 @@ start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
 # 2. ÖZEL MUM MİMARI (HİBRİT)
 # ==========================================
 def resample_custom_us_4h(df_1h):
-    """
-    SADECE ABD Hisseleri için:
-    Yahoo'dan gelen veriyi New York saatine çevirip,
-    TradingView usulü (09:30-13:30 ve 13:30-16:00) mumları oluşturur.
-    """
     if df_1h.empty: return df_1h
 
-    # Timezone Dönüşümü (New York)
     if df_1h.index.tz is None:
         df_1h.index = df_1h.index.tz_localize('UTC').tz_convert('America/New_York')
     else:
         df_1h.index = df_1h.index.tz_convert('America/New_York')
 
-    # Sadece Borsa Saatleri
     df_1h = df_1h.between_time('09:30', '16:00')
     
     agg_candles = []
     
     for date, group in df_1h.groupby(df_1h.index.date):
-        # 1. MUM (Sabah: 09:30 - 13:30)
         session1 = group[group.index.hour < 13] 
         if not session1.empty:
             agg_candles.append({
@@ -83,7 +82,6 @@ def resample_custom_us_4h(df_1h):
                 'volume': session1['volume'].sum()
             })
             
-        # 2. MUM (Öğlen: 13:30 - 16:00)
         session2 = group[group.index.hour >= 13]
         if not session2.empty:
             agg_candles.append({
@@ -101,12 +99,43 @@ def resample_custom_us_4h(df_1h):
     return df_4h
 
 # ==========================================
-# 3. HESAPLAMA MOTORU
+# 3. HESAPLAMA MOTORU (IMPULSE MACD EKLENDİ)
 # ==========================================
 def calculate_dema(series, length):
     ema1 = series.ewm(span=length, adjust=False).mean()
     ema2 = ema1.ewm(span=length, adjust=False).mean()
     return 2 * ema1 - ema2
+
+def calculate_impulse_macd(df, fast, slow, sig):
+    # Standart MACD Hesabı
+    ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
+    ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
+    
+    df['macd'] = ema_fast - ema_slow
+    df['macd_signal'] = df['macd'].ewm(span=sig, adjust=False).mean()
+    df['macd_hist'] = df['macd'] - df['macd_signal']
+    
+    # Impulse Mantığı (Histogram Momentum)
+    # 1. Histogram bir önceki mumdan büyük mü?
+    df['hist_rising'] = df['macd_hist'] > df['macd_hist'].shift(1)
+    
+    # Renk/Durum Belirleme
+    # Yeşil (Lime): MACD > Signal ve Hist Artıyor
+    # Mavi (Blue): MACD > Signal ve Hist Azalıyor
+    # Kırmızı (Red): MACD < Signal ve Hist Azalıyor
+    # Turuncu (Orange): MACD < Signal ve Hist Artıyor
+    
+    conditions = [
+        (df['macd'] > df['macd_signal']) & (df['hist_rising']), # YEŞİL
+        (df['macd'] > df['macd_signal']) & (~df['hist_rising']), # MAVİ
+        (df['macd'] < df['macd_signal']) & (~df['hist_rising']), # KIRMIZI
+        (df['macd'] < df['macd_signal']) & (df['hist_rising'])   # TURUNCU
+    ]
+    
+    choices = ["🚀 Güçlü", "💤 Zayıf", "🔻 Negatif", "🤔 Tepki"]
+    
+    df['iMACD_Status'] = np.select(conditions, choices, default="Nötr")
+    return df
 
 def calculate_adx(df, length=14):
     df = df.copy()
@@ -121,12 +150,10 @@ def calculate_adx(df, length=14):
     df['plus_dm'] = np.where((df['up'] > df['down']) & (df['up'] > 0), df['up'], 0)
     df['minus_dm'] = np.where((df['down'] > df['up']) & (df['down'] > 0), df['down'], 0)
 
-    # RMA Smoothing
     df['tr_smooth'] = df['tr'].ewm(alpha=1/length, adjust=False).mean()
     df['plus_dm_smooth'] = df['plus_dm'].ewm(alpha=1/length, adjust=False).mean()
     df['minus_dm_smooth'] = df['minus_dm'].ewm(alpha=1/length, adjust=False).mean()
 
-    # DI & ADX
     df['plus_di'] = 100 * (df['plus_dm_smooth'] / df['tr_smooth'])
     df['minus_di'] = 100 * (df['minus_dm_smooth'] / df['tr_smooth'])
     df['dx'] = 100 * abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di'])
@@ -187,18 +214,20 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     df['DEMA'] = calculate_dema(df['close'], dema_len)
     df = calculate_supertrend(df, st_atr, st_fact)
     df = calculate_adx(df, adx_len)
+    df = calculate_impulse_macd(df, macd_fast, macd_slow, macd_sig) # IMPULSE HESABI
     
     current = df.iloc[-1]
     
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V26)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V33)")
         last_20 = df.tail(20).copy()
         last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
         last_20['DEMA'] = last_20['DEMA'].round(2)
         last_20['Trend'] = np.where(last_20['ST_Trend'] == 1, "🟢 BUY", "🔴 SELL")
         last_20['ADX'] = last_20['adx'].round(2)
-        st.dataframe(last_20[['Zaman_Str', 'Fiyat', 'DEMA', 'Trend', 'ADX']], use_container_width=True)
+        # Impulse Status
+        st.dataframe(last_20[['Zaman_Str', 'Fiyat', 'DEMA', 'Trend', 'ADX', 'iMACD_Status']], use_container_width=True)
 
     if current['ST_Trend'] != 1: return None
     
@@ -229,8 +258,8 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
         "Fiyat": round(current['close'], 2),
         "DEMA": round(current['DEMA'], 2),
         "Sinyal": f"🔥 {candles_ago} Mum Önce",
-        "ADX Sinyal": round(signal_candle['adx'], 2),
-        "ADX Güncel": round(current['adx'], 2),
+        "ADX": round(current['adx'], 2),
+        "iMACD": current['iMACD_Status'], # YENİ SÜTUN
         "Durum": "YENİ TREND"
     }
 
@@ -246,7 +275,6 @@ def get_crypto_yahoo():
 
 def get_us_universe():
     return [
-        # TEKNOLOJİ & YARI İLETKEN
         "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "TSLA", "META", "AMD", "AVGO", "NFLX",
         "INTC", "QCOM", "CSCO", "DELL", "APP", "TSM", "BIDU", "BABA", "PLTR", "CRWD",
         "RBRK", "LSCC", "BBAI", "ZM", "ZS", "ZETA", "CLS", "PENG", "SOXL",
@@ -254,30 +282,18 @@ def get_us_universe():
         "FTNT", "SNOW", "SQ", "SHOP", "U", "ROKU", "DKNG", "HOOD", "PYPL", "MU", "TXN",
         "LRCX", "ADI", "KLAC", "ARM", "SMCI", "SNDK", "AMAT", "ON", "MCHP", "CDNS", "SNPS",
         "DDOG", "NET", "MDB", "TEAM", "TTWO", "EA", "PDD", "JD", "OKTA",
-        
-        # FİNANS
         "JPM", "V", "MA", "BAC", "WFC", "C", "GS", "MS", "BLK", "AXP", "SCHW", "USB",
         "TRV", "AIG", "SPGI", "COIN", "MSTR", "BRK-B", "PGR", "CB", "CME", "ICE", "COF", "SYF",
-        
-        # ENDÜSTRİ, TELEKOM & SAVUNMA
         "BA", "GE", "F", "GM", "CAT", "DE", "HON", "UNP", "UPS", "FDX", "LMT", "RTX",
         "NOC", "GD", "EMR", "MMM", "ETN", "VZ", "T", "TMUS", "CMCSA", "ADP", "CSX", "NSC",
         "WM", "RSG", "RIVN", "LCID",
-        
-        # SAĞLIK
         "JNJ", "PFE", "MRNA", "REGN", "LLY", "UNH", "ABBV", "AMGN", "BMY", "GILD", "ISRG",
         "SYK", "CVS", "TMO", "DHR", "VRTX", "MOH", "MDT", "BSX", "ZTS", "CI", "HUM",
-        
-        # PERAKENDE & TÜKETİM
         "WMT", "COST", "PG", "KO", "PEP", "XOM", "CVX", "DIS", "MCD", "NKE", "SBUX",
         "TGT", "LOW", "HD", "TJX", "LULU", "MDLZ", "PM", "MO", "CL", "KMB", "EL",
         "CMG", "MAR", "KHC", "HSY", "KR",
-        
-        # ENERJİ & HAMMADDE & GAYRİMENKUL
         "OXY", "SLB", "HAL", "COP", "EOG", "FCX", "NEM", "LIN", "DOW", "SHW", "NEE",
         "DUK", "SO", "MPC", "APD", "ECL", "NUE", "PLD", "AMT", "CCI", "EQIX", "PSA",
-        
-        # SENİN ÖZEL LİSTEN
         "NVDX", "AAPU", "GGLL", "AMZZ", "METU", "AMZP", "MARA", "QQQT",
         "O", "AGNC", "ORC", "SPHD", "DX", "OXLC", "GLAD", "GAIN", "GOOD", "LAND", "SRET",
         "QYLD", "XYLD", "SDIV", "DIV", "RYLD", "JEPI", "JEPQ", "EFC", "SCM", "PSEC",
@@ -311,7 +327,6 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
         
         if tf_conf['custom_4h']:
             is_crypto = symbol.endswith("-USD")
-            
             if is_crypto:
                 agg_dict = {'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'volume': 'sum'}
                 df = df.resample('4h').agg(agg_dict).dropna()
@@ -331,7 +346,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V26 (GALAXY)")
+st.title("🚀 BAŞKAN TREND HUNTER V33 (IMPULSE)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
