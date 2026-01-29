@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V33 (IMPULSE)", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V36 (SNIPER)", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -32,44 +32,43 @@ if tf_label == "4 Saat" and use_ext_hours:
 use_dema_filter = st.sidebar.checkbox("Fiyat > DEMA Kuralını Kullan", value=True)
 dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, disabled=not use_dema_filter)
 
-st_atr_len = st.sidebar.number_input("SuperTrend ATR", value=12)
-st_factor = st.sidebar.number_input("SuperTrend Faktör", value=3.0)
+# SUPERTREND
+st.sidebar.markdown("### SUPERTREND AYARLARI")
+st_atr_len = st.sidebar.number_input("ATR Uzunluğu", value=12)
+st_factor = st.sidebar.number_input("Faktör", value=3.0)
 freshness = st.sidebar.number_input("Sinyal Tazeliği (Son kaç mum?)", min_value=1, value=20, step=1)
 
-# MACD Ayarları
-st.sidebar.markdown("### IMPULSE MACD")
-macd_fast = st.sidebar.number_input("Fast Length", value=12)
-macd_slow = st.sidebar.number_input("Slow Length", value=26)
-macd_sig = st.sidebar.number_input("Signal Length", value=9)
+# LAZYBEAR IMPULSE MACD
+st.sidebar.markdown("### LAZYBEAR MACD AYARLARI")
+lazy_ma = st.sidebar.number_input("Length MA (Vars: 34)", value=34)
+lazy_sig = st.sidebar.number_input("Length Signal (Vars: 9)", value=9)
 
+# ADX
+st.sidebar.markdown("### DİĞER")
 adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("🩻 RÖNTGEN MODU")
-debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: NVDA)", value="")
+debug_symbol = st.sidebar.text_input("Şüpheli Sembolü Yaz (Örn: MRNA)", value="")
 btn_debug = st.sidebar.button("RÖNTGENİ ÇEK")
 
 st.sidebar.markdown("---")
 use_crypto = st.sidebar.checkbox("KRİPTO (Yahoo)", value=True)
 use_us = st.sidebar.checkbox("ABD BORSASI (Galaxy List)", value=True)
 manual_input = st.sidebar.text_area("Manuel Semboller", placeholder="Ekstra...")
-start_btn = st.sidebar.button("GENEL TARAMAYI BAŞLAT", type="primary")
+start_btn = st.sidebar.button("TARAMAYI BAŞLAT", type="primary")
 
 # ==========================================
-# 2. ÖZEL MUM MİMARI (HİBRİT)
+# 2. ÖZEL MUM MİMARI
 # ==========================================
 def resample_custom_us_4h(df_1h):
     if df_1h.empty: return df_1h
-
     if df_1h.index.tz is None:
         df_1h.index = df_1h.index.tz_localize('UTC').tz_convert('America/New_York')
     else:
         df_1h.index = df_1h.index.tz_convert('America/New_York')
-
     df_1h = df_1h.between_time('09:30', '16:00')
-    
     agg_candles = []
-    
     for date, group in df_1h.groupby(df_1h.index.date):
         session1 = group[group.index.hour < 13] 
         if not session1.empty:
@@ -81,7 +80,6 @@ def resample_custom_us_4h(df_1h):
                 'close': session1['close'].iloc[-1], 
                 'volume': session1['volume'].sum()
             })
-            
         session2 = group[group.index.hour >= 13]
         if not session2.empty:
             agg_candles.append({
@@ -92,49 +90,31 @@ def resample_custom_us_4h(df_1h):
                 'close': session2['close'].iloc[-1],
                 'volume': session2['volume'].sum()
             })
-            
     if not agg_candles: return pd.DataFrame()
     df_4h = pd.DataFrame(agg_candles)
     df_4h.set_index('time', inplace=True)
     return df_4h
 
 # ==========================================
-# 3. HESAPLAMA MOTORU (IMPULSE MACD EKLENDİ)
+# 3. HESAPLAMA MOTORU (LAZYBEAR ENGINE)
 # ==========================================
 def calculate_dema(series, length):
     ema1 = series.ewm(span=length, adjust=False).mean()
     ema2 = ema1.ewm(span=length, adjust=False).mean()
     return 2 * ema1 - ema2
 
-def calculate_impulse_macd(df, fast, slow, sig):
-    # Standart MACD Hesabı
-    ema_fast = df['close'].ewm(span=fast, adjust=False).mean()
-    ema_slow = df['close'].ewm(span=slow, adjust=False).mean()
+def calculate_smma(series, length):
+    return series.ewm(alpha=1/length, adjust=False).mean()
+
+def calculate_lazybear_macd(df, len_ma, len_sig):
+    # LazyBear Matematiği
+    src = (df['high'] + df['low'] + df['close']) / 3
+    ma_line = calculate_smma(src, len_ma)
+    signal_line = calculate_smma(ma_line, len_sig)
+    hist = ma_line - signal_line
     
-    df['macd'] = ema_fast - ema_slow
-    df['macd_signal'] = df['macd'].ewm(span=sig, adjust=False).mean()
-    df['macd_hist'] = df['macd'] - df['macd_signal']
-    
-    # Impulse Mantığı (Histogram Momentum)
-    # 1. Histogram bir önceki mumdan büyük mü?
-    df['hist_rising'] = df['macd_hist'] > df['macd_hist'].shift(1)
-    
-    # Renk/Durum Belirleme
-    # Yeşil (Lime): MACD > Signal ve Hist Artıyor
-    # Mavi (Blue): MACD > Signal ve Hist Azalıyor
-    # Kırmızı (Red): MACD < Signal ve Hist Azalıyor
-    # Turuncu (Orange): MACD < Signal ve Hist Artıyor
-    
-    conditions = [
-        (df['macd'] > df['macd_signal']) & (df['hist_rising']), # YEŞİL
-        (df['macd'] > df['macd_signal']) & (~df['hist_rising']), # MAVİ
-        (df['macd'] < df['macd_signal']) & (~df['hist_rising']), # KIRMIZI
-        (df['macd'] < df['macd_signal']) & (df['hist_rising'])   # TURUNCU
-    ]
-    
-    choices = ["🚀 Güçlü", "💤 Zayıf", "🔻 Negatif", "🤔 Tepki"]
-    
-    df['iMACD_Status'] = np.select(conditions, choices, default="Nötr")
+    df['LB_Signal'] = signal_line
+    df['LB_Hist'] = hist
     return df
 
 def calculate_adx(df, length=14):
@@ -187,12 +167,10 @@ def calculate_supertrend(df, period=10, multiplier=3):
             trend_up[i] = max(up_val[i], trend_up[i-1])
         else:
             trend_up[i] = up_val[i]
-            
         if close[i-1] < trend_dn[i-1]:
             trend_dn[i] = min(dn_val[i], trend_dn[i-1])
         else:
             trend_dn[i] = dn_val[i]
-            
         if close[i] > trend_dn[i-1]:
             trend[i] = 1
         elif close[i] < trend_up[i-1]:
@@ -204,40 +182,91 @@ def calculate_supertrend(df, period=10, multiplier=3):
     return df
 
 # ==========================================
-# 4. ANALİZ MOTORU
+# 4. ANALİZ MOTORU (V36 - SNIPER)
 # ==========================================
 def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_debug=False):
     if len(df) < (dema_len + 50): 
         if is_debug: st.error(f"Yetersiz Veri: {len(df)}")
         return None
 
+    # HESAPLAMALAR
     df['DEMA'] = calculate_dema(df['close'], dema_len)
     df = calculate_supertrend(df, st_atr, st_fact)
     df = calculate_adx(df, adx_len)
-    df = calculate_impulse_macd(df, macd_fast, macd_slow, macd_sig) # IMPULSE HESABI
+    df = calculate_lazybear_macd(df, lazy_ma, lazy_sig)
     
-    current = df.iloc[-1]
+    current = df.iloc[-1]   # T
+    prev = df.iloc[-2]      # T-1
+    prev2 = df.iloc[-3]     # T-2
     
+    # DEBUG EKRANI
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V33)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V36 - SNIPER)")
+        st.write("Strateji: Signal < 0 + (Dün Yeşil Bar < 0) -> (Bugün Mavi Bar > 0)")
+        
         last_20 = df.tail(20).copy()
-        last_20['Zaman_Str'] = last_20.index.strftime('%Y-%m-%d %H:%M')
+        last_20['Zaman'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
-        last_20['DEMA'] = last_20['DEMA'].round(2)
-        last_20['Trend'] = np.where(last_20['ST_Trend'] == 1, "🟢 BUY", "🔴 SELL")
-        last_20['ADX'] = last_20['adx'].round(2)
-        # Impulse Status
-        st.dataframe(last_20[['Zaman_Str', 'Fiyat', 'DEMA', 'Trend', 'ADX', 'iMACD_Status']], use_container_width=True)
+        last_20['ST'] = np.where(last_20['ST_Trend'] == 1, "🟢", "🔴")
+        last_20['LB_Hist'] = last_20['LB_Hist'].round(4)
+        
+        # Detaylı Durum
+        durum_list = []
+        for i in range(len(last_20)):
+            idx = last_20.index[i]
+            # T anındaki veriler
+            h_curr = last_20['LB_Hist'].iloc[i]
+            # T-1 anındaki veriler (iloc ile güvenli erişim)
+            if i > 0:
+                h_prev = last_20['LB_Hist'].iloc[i-1]
+                # T-2
+                if i > 1:
+                    h_prev2 = last_20['LB_Hist'].iloc[i-2]
+                    
+                    # Şartları kontrol et
+                    is_crossover = (h_prev < 0) and (h_curr > 0)
+                    was_green = (h_prev > h_prev2) # Dün, evvelsi günden büyük mü? (Rising Negative)
+                    
+                    if is_crossover and was_green:
+                        durum_list.append("🎯 TAM İSABET")
+                    elif is_crossover:
+                        durum_list.append("⚡ Normal Kırılım")
+                    else:
+                        durum_list.append("-")
+                else:
+                    durum_list.append("-")
+            else:
+                durum_list.append("-")
+                
+        last_20['Durum'] = durum_list
+        st.dataframe(last_20[['Zaman', 'Fiyat', 'ST', 'LB_Hist', 'Durum']], use_container_width=True)
 
+    # --- SNIPER FİLTRELERİ ---
+    
+    # 1. SuperTrend BUY mu?
     if current['ST_Trend'] != 1: return None
     
+    # 2. LazyBear Signal < 0 (Dipte miyiz?)
+    if current['LB_Signal'] >= 0: return None
+    
+    # 3. HİSTOGRAM KIRILIMI (Dün Eksi, Bugün Artı)
+    hist_crossover = (prev['LB_Hist'] < 0) and (current['LB_Hist'] > 0)
+    if not hist_crossover: return None
+    
+    # 4. HAZIRLIK ŞARTI: "AŞAĞIDA YEŞİL BARLAR UZUYOR MU?"
+    # Bu şart: Bir önceki mumun histogramı (ki negatifti), ondan önceki mumdan büyük olmalı.
+    # Bu, negatif bölgede YÜKSELİŞ (YEŞİL BAR) olduğunu kanıtlar.
+    was_green_foundation = prev['LB_Hist'] > prev2['LB_Hist']
+    
+    if not was_green_foundation: return None
+
+    # 5. Tazelik
     lookback = int(fresh) + 1
     recent_trends = df['ST_Trend'].tail(lookback).values
     if -1 not in recent_trends: return None 
         
     candles_ago = 0
     found_signal = False
-    
     for i in range(len(recent_trends)-1, 0, -1):
         if recent_trends[i] == 1 and recent_trends[i-1] == -1:
             candles_ago = (len(recent_trends) - 1) - i
@@ -256,11 +285,11 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     return {
         "Enstrüman": symbol,
         "Fiyat": round(current['close'], 2),
-        "DEMA": round(current['DEMA'], 2),
         "Sinyal": f"🔥 {candles_ago} Mum Önce",
         "ADX": round(current['adx'], 2),
-        "iMACD": current['iMACD_Status'], # YENİ SÜTUN
-        "Durum": "YENİ TREND"
+        "LB Hist": round(current['LB_Hist'], 4),
+        "Setup": "Yeşil(Dip) -> Mavi(Kırılım)",
+        "Durum": "🎯 TAM İSABET"
     }
 
 # ==========================================
@@ -346,7 +375,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V33 (IMPULSE)")
+st.title("🚀 BAŞKAN TREND HUNTER V36 (SNIPER)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
