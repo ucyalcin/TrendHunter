@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime, time
 
 # Sayfa Ayarları
-st.set_page_config(page_title="BAŞKAN TREND HUNTER V37", layout="wide")
+st.set_page_config(page_title="BAŞKAN TREND HUNTER V38", layout="wide")
 
 # ==========================================
 # 1. AYARLAR
@@ -34,17 +34,17 @@ dema_len = st.sidebar.number_input("DEMA Uzunluğu", value=200, min_value=5, dis
 
 # --- SUPERTREND ---
 st.sidebar.markdown("### 1. SUPERTREND")
-st_atr_len = st.sidebar.number_input("ATR Uzunluğu", value=14) # İSTEK 3: Default 14 yapıldı
+st_atr_len = st.sidebar.number_input("ATR Uzunluğu", value=14) 
 st_factor = st.sidebar.number_input("Faktör", value=3.0)
 freshness = st.sidebar.number_input("Sinyal Tazeliği (Son kaç mum?)", min_value=1, value=20, step=1)
 
 # --- ADX ---
-st.sidebar.markdown("### 2. ADX") # İSTEK 2: Araya taşındı
+st.sidebar.markdown("### 2. ADX")
 adx_len = st.sidebar.number_input("ADX Uzunluğu", value=14, min_value=1)
 
 # --- LAZYBEAR ---
 st.sidebar.markdown("### 3. LAZYBEAR IMPULSE MACD")
-use_lazybear = st.sidebar.checkbox("LazyBear Kriterini Kullan", value=True) # İSTEK 1: Checkbox eklendi
+use_lazybear = st.sidebar.checkbox("LazyBear Kriterini Kullan", value=True)
 
 if use_lazybear:
     lazy_ma = st.sidebar.number_input("ImpulseMACD Length (Vars: 34)", value=34)
@@ -113,22 +113,19 @@ def calculate_smma(series, length):
     return series.ewm(alpha=1/length, adjust=False).mean()
 
 def calculate_lazybear_macd(df, len_ma, len_sig):
-    # İSTEK 4: ImpulseMACD ve ImpulseMACDSignal hesaplaması
-    # Kaynak: hlc3
     src = (df['high'] + df['low'] + df['close']) / 3
-    
-    # ImpulseMACD (Ana Hat) = SMMA(src, len_ma)
     impulse_macd = calculate_smma(src, len_ma)
-    
-    # ImpulseMACDSignal (Sinyal Hattı) = SMMA(ImpulseMACD, len_sig)
     impulse_signal = calculate_smma(impulse_macd, len_sig)
-    
-    # Histogram (Opsiyonel görsel için, şartlarda kullanmıyoruz artık)
     hist = impulse_macd - impulse_signal
     
     df['LB_Macd'] = impulse_macd
     df['LB_Signal'] = impulse_signal
     df['LB_Hist'] = hist
+    
+    # KESİŞİM TESPİTİ (CROSSOVER)
+    # Bir önceki mumda MACD < Sinyal, Şu an MACD > Sinyal ise True
+    df['LB_Cross'] = (df['LB_Macd'] > df['LB_Signal']) & (df['LB_Macd'].shift(1) < df['LB_Signal'].shift(1))
+    
     return df
 
 def calculate_adx(df, length=14):
@@ -186,7 +183,7 @@ def calculate_supertrend(df, period=10, multiplier=3):
     return df
 
 # ==========================================
-# 4. ANALİZ MOTORU (V37 - MODULAR)
+# 4. ANALİZ MOTORU (V38 - SYNCHRONIZED)
 # ==========================================
 def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_debug=False):
     if len(df) < (dema_len + 50): 
@@ -199,65 +196,54 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
     df = calculate_adx(df, adx_len)
     df = calculate_lazybear_macd(df, lazy_ma, lazy_sig)
     
-    current = df.iloc[-1]   # T
-    prev = df.iloc[-2]      # T-1
+    current = df.iloc[-1]
     
     # DEBUG EKRANI
     if is_debug:
-        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V37)")
+        st.write(f"### 🧬 {symbol} DETAYLI ANALİZİ (V38)")
         
         last_20 = df.tail(20).copy()
         last_20['Zaman'] = last_20.index.strftime('%Y-%m-%d %H:%M')
         last_20['Fiyat'] = last_20['close'].round(2)
         last_20['ST'] = np.where(last_20['ST_Trend'] == 1, "🟢", "🔴")
-        
-        # Değerleri Göster
         last_20['Imp_MACD'] = last_20['LB_Macd'].round(4)
         last_20['Imp_Signal'] = last_20['LB_Signal'].round(4)
+        last_20['Cross'] = np.where(last_20['LB_Cross'], "⚡", "-")
         
-        # Kesişim Durumu
-        # Kesişim: Bir önceki mumda MACD < Sinyal, Şu an MACD > Sinyal
-        cross_list = []
-        for i in range(len(last_20)):
-            if i == 0: 
-                cross_list.append("-")
-                continue
-            
-            c_curr_mac = last_20['LB_Macd'].iloc[i]
-            c_curr_sig = last_20['LB_Signal'].iloc[i]
-            c_prev_mac = last_20['LB_Macd'].iloc[i-1]
-            c_prev_sig = last_20['LB_Signal'].iloc[i-1]
-            
-            if c_prev_mac < c_prev_sig and c_curr_mac > c_curr_sig:
-                cross_list.append("⚡ KESİŞİM")
-            elif c_curr_mac > c_curr_sig:
-                cross_list.append("Yukarıda")
-            else:
-                cross_list.append("Aşağıda")
-                
-        last_20['Durum'] = cross_list
-        st.dataframe(last_20[['Zaman', 'Fiyat', 'ST', 'Imp_MACD', 'Imp_Signal', 'Durum']], use_container_width=True)
+        st.dataframe(last_20[['Zaman', 'Fiyat', 'ST', 'Imp_MACD', 'Imp_Signal', 'Cross']], use_container_width=True)
 
     # --- FİLTRELER ---
     
-    # 1. SuperTrend BUY mu?
+    # 1. SuperTrend BUY (Trend AL yönünde mi?)
     if current['ST_Trend'] != 1: return None
     
+    # Tazelik Penceresini Belirle
+    lookback = int(fresh) + 1
+    
     # 2. LazyBear Kriteri (Opsiyonel)
+    crossover_candle_ago = -1 # Kesişimin olduğu mum
+    
     if use_lazybear:
-        # İSTEK 4: ImpulseMACD, ImpulseMACDSignal'ı YUKARI KESSİN
-        # Şart: (Dün MACD < Sinyal) VE (Bugün MACD > Sinyal)
+        # Son 'freshness' kadar mumun içinde KESİŞİM var mı diye bakıyoruz.
+        # Sadece son muma değil!
+        recent_crosses = df['LB_Cross'].tail(lookback).values
         
-        lb_crossover = (prev['LB_Macd'] < prev['LB_Signal']) and (current['LB_Macd'] > current['LB_Signal'])
-        
-        if not lb_crossover: return None
-        
-        status_msg = "⚡ LB KESİŞİM"
+        if True in recent_crosses:
+             # Kesişim bulunmuş (True var)
+             # Kesişimin kaç mum önce olduğunu bul
+             # Diziyi tersten tarayalım ki en son kesişimi bulalım
+             for i in range(len(recent_crosses)-1, -1, -1):
+                 if recent_crosses[i]: # True ise
+                     crossover_candle_ago = (len(recent_crosses) - 1) - i
+                     break
+        else:
+            return None # Hiç kesişim yoksa elenir
+            
+        status_msg = f"⚡ LB Cross ({crossover_candle_ago} mum önce)"
     else:
         status_msg = "ST BUY"
 
-    # 3. Tazelik
-    lookback = int(fresh) + 1
+    # 3. SuperTrend Tazelik Kontrolü
     recent_trends = df['ST_Trend'].tail(lookback).values
     if -1 not in recent_trends: return None 
         
@@ -278,14 +264,13 @@ def analyze(df, symbol, dema_len, st_atr, st_fact, fresh, adx_len, use_dema, is_
         if signal_candle['close'] <= signal_candle['DEMA']:
             return None 
 
-    # İSTEK 4 (DEVAMI): Tabloya değerleri yazdır
     return {
         "Enstrüman": symbol,
         "Fiyat": round(current['close'], 2),
         "Sinyal": f"🔥 {candles_ago} Mum Önce",
         "ADX": round(current['adx'], 2),
-        "ImpulseMACD": round(current['LB_Macd'], 4),   # Değer 1
-        "ImpulseSignal": round(current['LB_Signal'], 4), # Değer 2
+        "ImpulseMACD": round(current['LB_Macd'], 4),
+        "ImpulseSignal": round(current['LB_Signal'], 4),
         "Durum": status_msg
     }
 
@@ -372,7 +357,7 @@ def fetch_and_analyze(symbol, tf_conf, use_ext, is_debug=False):
 # ==========================================
 # 6. ARAYÜZ
 # ==========================================
-st.title("🚀 BAŞKAN TREND HUNTER V37 (MODULAR)")
+st.title("🚀 BAŞKAN TREND HUNTER V38 (SYNCHRONIZED)")
 
 if btn_debug and debug_symbol:
     st.info(f"🔍 {debug_symbol} Röntgen Çekiliyor...")
